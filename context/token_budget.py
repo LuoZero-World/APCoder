@@ -153,18 +153,23 @@ class TokenBudget:
         if not messages:
             return messages
 
+        # 先估算每条消息各自占用多少 token，快速判断是否需要裁剪。
         token_counts = [estimate_tokens(m.get("content", "")) for m in messages]
         total = sum(token_counts)
 
+        # 总量没有超过预算时，直接保留完整历史。
         if total <= token_limit:
             return messages
 
+        # 第 1 条消息通常是任务描述，需要尽量保留；后续历史才参与裁剪。
         result = [messages[0]]
         remaining_budget = token_limit - token_counts[0]
         dropped = 0
         selected = []
         budget_left = remaining_budget
 
+        # 从最新消息往旧消息反向选择，优先保留最近上下文。
+        # 选中的消息先临时逆序放入 selected，最后再 reverse 回原始时间顺序。
         for msg, tokens in zip(reversed(messages[1:]), reversed(token_counts[1:])):
             if budget_left - tokens >= 0:
                 selected.append(msg)
@@ -174,12 +179,14 @@ class TokenBudget:
 
         selected.reverse()
 
+        # 如果有旧消息被丢弃，插入一条提示消息，让 LLM 知道上下文被压缩过。
         if dropped > 0:
             result.append({
                 "role": "user",
                 "content": f"[{dropped} earlier messages were truncated to fit context window]",
             })
 
+        # 最终顺序：首条任务描述 + 截断提示（可选）+ 保留下来的最近历史。
         result.extend(selected)
         return result
 

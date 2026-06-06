@@ -83,9 +83,13 @@ class GitStatusTool(BaseTool):
         }
 
     def execute(self, params: dict[str, Any]) -> ToolResult:
+        # 1. cwd 可指定 repo 根目录；不传则使用当前进程工作目录。
         cwd = params.get("cwd")
+
+        # 2. 使用 --short --branch，输出紧凑，适合塞回 Agent 上下文。
         success, output = _run_git(["status", "--short", "--branch"], cwd=cwd, runtime=self._runtime)
         if not output:
+            # 3. git status 可能没有输出，转换成明确的人类可读状态。
             output = "Nothing to commit, working tree clean"
         return ToolResult(success=success, output=output, error=None if success else output)
 
@@ -139,10 +143,12 @@ class GitDiffTool(BaseTool):
         }
 
     def execute(self, params: dict[str, Any]) -> ToolResult:
+        # 1. staged/path/cwd 分别控制 diff 类型、目标文件和工作目录。
         cwd = params.get("cwd")
         staged = params.get("staged", False)
         path = params.get("path")
 
+        # 2. 逐步组装 git diff 参数，避免在字符串里手写复杂命令。
         args = ["diff"]
         if staged:
             args.append("--cached")
@@ -152,6 +158,7 @@ class GitDiffTool(BaseTool):
         success, output = _run_git(args, cwd=cwd, runtime=self._runtime)
 
         if not output:
+            # 3. 没有 diff 不是错误，而是一个有效观察结果。
             label = "staged" if staged else "unstaged"
             return ToolResult(success=True, output=f"No {label} changes.")
 
@@ -161,6 +168,7 @@ class GitDiffTool(BaseTool):
             omitted = len(output) - kept
             output = output[:kept] + f"\n... [{omitted} chars truncated]"
 
+        # 4. git 命令失败时，把 git 输出同时放进 output/error，方便 LLM 看到原因。
         return ToolResult(success=success, output=output, error=None if success else output)
 
 
@@ -208,13 +216,17 @@ class GitAddTool(BaseTool):
         }
 
     def execute(self, params: dict[str, Any]) -> ToolResult:
+        # 1. 默认暂存所有变更；也允许 LLM 传入具体文件列表。
         cwd = params.get("cwd")
         paths: list[str] = params.get("paths", ["."])
         if not paths:
+            # 2. 空列表按默认值处理，避免生成 git add 后没有路径的命令。
             paths = ["."]
 
+        # 3. 委托 git CLI 执行暂存动作。
         success, output = _run_git(["add"] + paths, cwd=cwd, runtime=self._runtime)
         if success:
+            # 4. git add 成功通常没有输出，这里补一个确认消息。
             return ToolResult(success=True, output=f"Staged: {', '.join(paths)}")
         return ToolResult(success=False, output=output, error=output)
 
@@ -263,14 +275,17 @@ class GitCommitTool(BaseTool):
         }
 
     def execute(self, params: dict[str, Any]) -> ToolResult:
+        # 1. commit 必须有 message；cwd 用于指定仓库目录。
         cwd = params.get("cwd")
         message = params.get("message", "").strip()
 
+        # 2. 没有提交信息时不调用 git，直接返回参数错误。
         if not message:
             return ToolResult(
                 success=False, output="", error="commit message is required"
             )
 
+        # 3. 只封装 git commit -m，不负责 git add / git push。
         success, output = _run_git(["commit", "-m", message], cwd=cwd, runtime=self._runtime)
         return ToolResult(
             success=success,

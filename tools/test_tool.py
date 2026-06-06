@@ -71,6 +71,7 @@ class PytestTool(BaseTool):
         }
 
     def execute(self, params: dict[str, Any]) -> ToolResult:
+        # 1. cwd 影响默认测试路径判断，也会传给 runtime 作为命令工作目录。
         cwd = params.get("cwd", None)
         cwd_path = Path(cwd) if cwd else Path.cwd()
 
@@ -82,6 +83,7 @@ class PytestTool(BaseTool):
             else:
                 test_path = "."
 
+        # 2. 额外参数直接拼进 pytest 命令，用于 -x、-k、-v 等常见控制。
         extra_args = params.get("args", "")
 
         # 组装命令：--tb=short 足够 agent 理解，--no-header 减少噪音
@@ -95,20 +97,26 @@ class PytestTool(BaseTool):
         if extra_args:
             cmd_parts.extend(extra_args.split())
 
+        # 3. 通过 runtime 执行 pytest；测试工具默认超时比通用 shell 更长。
         cmd_str = " ".join(cmd_parts)
         run_result = self._runtime.exec(cmd_str, cwd=cwd, timeout=PYTEST_TIMEOUT)
+
+        # 4. 超时单独作为失败类型返回，方便 Agent 识别不是普通断言失败。
         if "timed out" in run_result.stderr.lower():
             return ToolResult(
                 success=False,
                 output="",
                 error=f"pytest timed out after {PYTEST_TIMEOUT}s",
             )
+
+        # 5. 成败只看 exit code；stdout/stderr 文本只用于生成摘要。
         raw = run_result.output
         success = run_result.returncode == 0
 
         # 解析并格式化输出
         output = _format_pytest_output(raw, success)
 
+        # 6. 失败时 error 放退出码，详细失败原因放 output，供 history/reflection 使用。
         return ToolResult(
             success=success,
             output=output,

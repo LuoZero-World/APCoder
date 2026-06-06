@@ -80,26 +80,31 @@ class SearchTextTool(BaseTool):
         }
 
     def execute(self, params: dict[str, Any]) -> ToolResult:
+        # 1. 读取搜索条件：pattern 支持正则，path/file_pattern 控制搜索范围。
         raw_pattern = params.get("pattern", "")
         search_path = Path(params.get("path", "."))
         file_pattern = params.get("file_pattern", "*")
         case_sensitive = params.get("case_sensitive", True)
 
+        # 2. 先编译正则；正则非法时直接返回工具错误，不进入文件遍历。
         flags = 0 if case_sensitive else re.IGNORECASE
         try:
             regex = re.compile(raw_pattern, flags)
         except re.error as e:
             return ToolResult(success=False, output="", error=f"Invalid regex: {e}")
 
+        # 3. 搜索根路径不存在时返回失败，避免静默给出空结果。
         if not search_path.exists():
             return ToolResult(
                 success=False, output="", error=f"Path not found: {search_path}"
             )
 
+        # 4. _iter_files 负责递归遍历和跳过无关目录，这里只消费候选文件。
         matches: list[str] = []
         files = _iter_files(search_path, file_pattern)
 
         for filepath in files:
+            # 5. 达到结果上限立即停止，防止观察结果过长挤占上下文。
             if len(matches) >= MAX_RESULTS:
                 break
             try:
@@ -108,6 +113,7 @@ class SearchTextTool(BaseTool):
                     start=1,
                 ):
                     if regex.search(line):
+                        # 6. 单行也做长度截断；返回格式保持 grep 风格：path:line: text。
                         display_line = line[:MAX_LINE_LENGTH]
                         if len(line) > MAX_LINE_LENGTH:
                             display_line += " ..."
@@ -115,6 +121,7 @@ class SearchTextTool(BaseTool):
                         if len(matches) >= MAX_RESULTS:
                             break
             except OSError:
+                # 7. 单个文件读失败不影响整体搜索，跳过即可。
                 continue
 
         if not matches:
@@ -169,20 +176,24 @@ class FindFilesTool(BaseTool):
         }
 
     def execute(self, params: dict[str, Any]) -> ToolResult:
+        # 1. pattern 是文件名 glob，不是内容正则；path 是搜索根目录。
         pattern = params.get("pattern", "")
         search_path = Path(params.get("path", "."))
 
+        # 2. 根目录不存在视为工具失败。
         if not search_path.exists():
             return ToolResult(
                 success=False, output="", error=f"Path not found: {search_path}"
             )
 
+        # 3. 复用 _iter_files 的目录跳过逻辑，并限制最多返回 MAX_RESULTS 个文件。
         results: list[str] = []
         for filepath in _iter_files(search_path, pattern):
             results.append(str(filepath))
             if len(results) >= MAX_RESULTS:
                 break
 
+        # 4. 没找到文件也算成功观察，因为搜索动作本身没有出错。
         if not results:
             return ToolResult(
                 success=True,
@@ -239,9 +250,11 @@ class FindSymbolTool(BaseTool):
         }
 
     def execute(self, params: dict[str, Any]) -> ToolResult:
+        # 1. 读取符号名和搜索根目录；symbol 支持前缀/部分匹配。
         symbol = params.get("symbol", "")
         search_path = Path(params.get("path", "."))
 
+        # 2. symbol 是必填核心参数，缺失时直接返回失败。
         if not symbol:
             return ToolResult(success=False, output="", error="symbol is required")
 
@@ -251,6 +264,7 @@ class FindSymbolTool(BaseTool):
             re.MULTILINE,
         )
 
+        # 3. 只扫描 Python 文件；这是一个轻量正则版 symbol finder。
         matches: list[str] = []
         for filepath in _iter_files(search_path, "*.py"):
             if len(matches) >= MAX_RESULTS:
@@ -258,9 +272,11 @@ class FindSymbolTool(BaseTool):
             try:
                 content = filepath.read_text(encoding="utf-8", errors="replace")
                 for m in pattern.finditer(content):
+                    # 4. 通过匹配位置前的换行数计算行号。
                     lineno = content[: m.start()].count("\n") + 1
                     kind = m.group(2)   # def / class
                     name = m.group(3)
+                    # 5. 有缩进就粗略认为是 method，否则认为是顶层函数/类。
                     indent = len(m.group(1))
                     scope = "method" if indent > 0 else "top-level"
                     matches.append(
@@ -269,6 +285,7 @@ class FindSymbolTool(BaseTool):
                     if len(matches) >= MAX_RESULTS:
                         break
             except OSError:
+                # 6. 个别文件读失败时跳过，保持搜索工具整体可用。
                 continue
 
         if not matches:

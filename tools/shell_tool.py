@@ -152,10 +152,12 @@ class ShellTool(BaseTool):
         }
 
     def execute(self, params: dict[str, Any]) -> ToolResult:
+        # 1. 读取命令参数；cmd 去掉首尾空白，timeout/cwd 允许 LLM 按需覆盖。
         cmd: str = params.get("cmd", "").strip()
         timeout: int = int(params.get("timeout", 30))
         cwd: str | None = params.get("cwd", None)
 
+        # 2. 空命令没有执行意义，直接返回工具错误。
         if not cmd:
             return ToolResult(success=False, output="", error="cmd is required")
 
@@ -170,10 +172,12 @@ class ShellTool(BaseTool):
 
         # 层 2：白名单免确认
         if not _needs_confirm(cmd):
+            # 只读命令或不命中危险关键词的命令，直接交给 runtime 执行。
             return self._run(cmd, timeout, cwd)
 
         # 层 3：权限确认
         if self._confirm_callback is not None:
+            # chat/交互模式可注入确认回调；用户拒绝时不执行命令。
             allowed = self._confirm_callback(cmd)
             if not allowed:
                 return ToolResult(
@@ -191,7 +195,9 @@ class ShellTool(BaseTool):
 
     def _run(self, cmd: str, timeout: int, cwd: str | None) -> ToolResult:
         """通过 runtime 执行命令（本地或 Docker 沙箱）。"""
+        # runtime 屏蔽本地/Docker 差异，ShellTool 只关心命令和结果。
         result = self._runtime.exec(cmd, cwd=cwd, timeout=timeout)
+        # 输出先截断再返回，避免一次 shell 输出占满上下文。
         output = _truncate(result.output, MAX_OUTPUT_CHARS)
         if not result.success:
             # 区分 timeout 和普通错误，error 字段包含可读原因

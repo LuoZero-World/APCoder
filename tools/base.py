@@ -132,6 +132,7 @@ class ToolRegistry:
         按名称查找工具并执行。
         工具不存在时返回 error ToolResult（不抛异常，让 agent 继续运行）。
         """
+        # 1. LLM 可能幻觉出未注册工具；这里转成可观察错误，而不是打断 Agent 进程。
         if name not in self._tools:
             available = ", ".join(self._tools.keys()) or "none"
             return ToolResult(
@@ -140,6 +141,7 @@ class ToolRegistry:
                 error=f"Unknown tool '{name}'. Available tools: {available}",
             )
 
+        # 2. 找到工具后直接把参数透传给具体 Tool.execute()。
         tool = self._tools[name]
         try:
             return tool.execute(params)
@@ -204,8 +206,10 @@ class NoopTool(BaseTool):
         }
 
     def execute(self, params: dict[str, Any]) -> ToolResult:
+        # 测试替身：记录调用次数和最后一次参数，方便断言 Agent 是否调用了工具。
         self.call_count += 1
         self.last_params = params
+        # 不做任何真实副作用，固定返回成功。
         return ToolResult(success=True, output=self._output)
 
 
@@ -233,6 +237,7 @@ class FailingTool(BaseTool):
         return {"type": "object", "properties": {}, "required": []}
 
     def execute(self, params: dict[str, Any]) -> ToolResult:
+        # 测试替身：固定失败，用来覆盖工具失败、测试失败和 reflection 分支。
         self.call_count += 1
         return ToolResult(
             success=False,

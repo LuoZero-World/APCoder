@@ -92,6 +92,7 @@ def _get_language(ext: str):
     if ext in _lang_cache:
         return _lang_cache[ext]
 
+    # 语言支持按文件扩展名注册；未注册的文件不走 tree-sitter。
     entry = _LANG_REGISTRY.get(ext)
     if entry is None:
         _lang_cache[ext] = None
@@ -99,6 +100,7 @@ def _get_language(ext: str):
 
     module_name, attr_name = entry
     try:
+        # 按需动态加载语言包，避免启动时导入所有 tree-sitter 依赖。
         import importlib
         from tree_sitter import Language
         mod = importlib.import_module(module_name)
@@ -107,6 +109,7 @@ def _get_language(ext: str):
         _lang_cache[ext] = lang
         return lang
     except Exception:
+        # 语言包未安装或解析器 API 不兼容时，后续降级到 regex fallback。
         _lang_cache[ext] = None
         return None
 
@@ -141,6 +144,7 @@ class FileInfo:
         return str(self.path)
 
     def importance_score(self) -> float:
+        # 启发式排序：顶层定义越多越重要；文件越大越可能是噪音，略微降权。
         top_level = sum(1 for s in self.symbols if s.is_toplevel)
         size_penalty = self.size / 10_000
         return top_level - size_penalty
@@ -163,19 +167,23 @@ class RepoMap:
         self._root = Path(repo_path).resolve()
 
     def build(self, budget: int = 8000) -> str:
+        # 入口：扫描仓库，得到每个文件的元信息和符号列表。
         files = self._scan()
         if not files:
             return "(empty repository)"
 
+        # 按重要性排序；预算不足时，越重要的文件越优先进入 repo-map。
         files.sort(key=lambda f: f.importance_score(), reverse=True)
 
         lines: list[str] = []
         char_count = 0
+        # 这里用 1 token ~= 4 chars 的经验值，把 token 预算粗略换成字符预算。
         max_chars = budget * 4
 
         for fi in files:
             block = self._format_file(fi)
             if char_count + len(block) > max_chars:
+                # 达到预算上限后停止，并保留“还有多少文件未展示”的提示。
                 remaining = len(files) - files.index(fi)
                 lines.append(f"... ({remaining} more files not shown)")
                 break
@@ -187,17 +195,21 @@ class RepoMap:
     def _scan(self) -> list[FileInfo]:
         results: list[FileInfo] = []
         for path in sorted(self._root.rglob("*")):
+            # 跳过依赖、缓存、构建产物等目录，避免摘要被噪音撑大。
             if any(part in _SKIP_DIRS for part in path.parts):
                 continue
             if not path.is_file():
                 continue
             size = path.stat().st_size
+            # 超大文件通常不适合放进结构摘要，直接跳过。
             if size > 500_000:
                 continue
 
+            # repo-map 输出使用相对路径，便于模型按仓库结构理解文件位置。
             fi = FileInfo(path=path.relative_to(self._root), size=size)
             ext = path.suffix.lower()
 
+            # 只对源码类文件提取符号；其他文件保留路径即可。
             if ext in _LANG_REGISTRY or ext in {".py", ".js", ".ts", ".go", ".rs"}:
                 try:
                     content = path.read_text(encoding="utf-8", errors="replace")
@@ -214,9 +226,11 @@ class RepoMap:
         if sym_count:
             header += f" ({sym_count} symbol{'s' if sym_count != 1 else ''})"
 
+        # 没有提取到符号时，只输出文件路径，保持 repo-map 简洁。
         if not fi.symbols:
             return header + "\n"
 
+        # 有符号时输出紧凑结构：文件路径 + 符号类型 / 名称 / 行号。
         sym_lines = [header + ":"]
         for sym in fi.symbols:
             prefix = "    " if not sym.is_toplevel else "  "
@@ -232,6 +246,7 @@ def _extract_symbols(content: str, filepath: Path, ext: str) -> list[Symbol]:
     """
     按扩展名选择解析方式：tree-sitter（如已安装）或正则 fallback。
     """
+    # 优先使用 tree-sitter 做 AST 级符号提取；不可用时再走正则兜底。
     lang = _get_language(ext)
     if lang is not None:
         return _extract_with_treesitter(content, filepath, lang)
@@ -242,10 +257,12 @@ def _extract_with_treesitter(content: str, filepath: Path, lang) -> list[Symbol]
     """用 tree-sitter 提取符号，失败时降级为正则。"""
     try:
         from tree_sitter import Parser
+        # 将源码解析成 AST，再递归遍历节点寻找函数、方法、类等定义。
         parser = Parser(lang)
         tree = parser.parse(content.encode("utf-8", errors="replace"))
         return _walk_tree(tree.root_node, filepath)
     except Exception:
+        # 单个文件 AST 解析失败不影响整体 repo-map，退回 regex fallback。
         return _extract_symbols_regex(content, filepath)
 
 
@@ -254,6 +271,7 @@ def _walk_tree(node, filepath: Path) -> list[Symbol]:
     results: list[Symbol] = []
     ntype = node.type
 
+    # 函数/方法节点：取 name 字段；用缩进粗略区分顶层函数和方法。
     if ntype in _FUNC_NODES and ntype != "arrow_function":
         name_node = node.child_by_field_name("name")
         if name_node:
@@ -266,6 +284,7 @@ def _walk_tree(node, filepath: Path) -> list[Symbol]:
                 file=filepath,
                 indent=indent,
             ))
+    # 类、结构体、接口等统一作为 class 类符号放进 repo-map。
     elif ntype in _CLASS_NODES:
         name_node = node.child_by_field_name("name")
         if name_node:
@@ -278,6 +297,7 @@ def _walk_tree(node, filepath: Path) -> list[Symbol]:
                 indent=indent,
             ))
 
+    # 递归遍历子节点，收集整个文件中的定义。
     for child in node.children:
         results.extend(_walk_tree(child, filepath))
 
@@ -302,6 +322,7 @@ def _extract_symbols_regex(content: str, filepath: Path) -> list[Symbol]:
         # 跳过 Java/JS 修饰符误匹配（public/private 后面跟的是类型，不是名字）
         if keyword in ("public", "private", "protected", "static"):
             continue
+        # regex fallback 没有 AST，只能用行首缩进粗略区分顶层函数和方法。
         indent = len(line) - len(line.lstrip())
         if keyword == "class":
             kind = "class"

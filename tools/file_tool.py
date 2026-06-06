@@ -62,7 +62,10 @@ class FileReadTool(BaseTool):
         }
 
     def execute(self, params: dict[str, Any]) -> ToolResult:
+        # 1. 从 LLM 传入的参数中取路径；这里不做路径归一化，只按当前工作目录解析。
         path = Path(params.get("path", ""))
+
+        # 2. 先做基础校验，把“不存在/不是文件”转成 ToolResult.error。
         if not path.exists():
             return ToolResult(
                 success=False,
@@ -77,10 +80,12 @@ class FileReadTool(BaseTool):
             )
 
         try:
+            # 3. 读取文本文件；errors="replace" 避免编码异常中断 Agent 循环。
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError as e:
             return ToolResult(success=False, output="", error=str(e))
 
+        # 4. file_read 只返回前 MAX_READ_LINES 行，避免一次把上下文塞爆。
         total = len(lines)
         truncated = total > MAX_READ_LINES
         display_lines = lines[:MAX_READ_LINES]
@@ -98,6 +103,7 @@ class FileReadTool(BaseTool):
                 f"Use file_view with start_line to read the rest."
             )
 
+        # 5. 成功结果写入 output，后续由 core.py 转成 Observation 注入 history/EventLog。
         return ToolResult(
             success=True,
             output=f"File: {path} ({total} lines total)\n{numbered}{suffix}",
@@ -142,19 +148,23 @@ class FileViewTool(BaseTool):
         }
 
     def execute(self, params: dict[str, Any]) -> ToolResult:
+        # 1. 读取路径和起始行；start_line 最小为 1，符合用户看到的行号习惯。
         path = Path(params.get("path", ""))
         start_line = max(1, int(params.get("start_line", 1)))
 
+        # 2. 和 file_read 一样，先把路径错误封装为工具失败结果。
         if not path.exists():
             return ToolResult(success=False, output="", error=f"File not found: {path}")
         if not path.is_file():
             return ToolResult(success=False, output="", error=f"Not a file: {path}")
 
         try:
+            # 3. 先完整读入，再按行切窗口；窗口大小由 VIEW_WINDOW_LINES 控制。
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError as e:
             return ToolResult(success=False, output="", error=str(e))
 
+        # 4. 起始行超过文件长度时直接报错，避免返回空窗口误导 Agent。
         total = len(lines)
         if start_line > total:
             return ToolResult(
@@ -163,6 +173,7 @@ class FileViewTool(BaseTool):
                 error=f"start_line {start_line} exceeds file length ({total} lines)",
             )
 
+        # 5. 计算当前窗口范围，并保留真实行号，便于下一轮继续定位。
         end_line = min(start_line + VIEW_WINDOW_LINES - 1, total)
         window = lines[start_line - 1 : end_line]
 
@@ -171,6 +182,7 @@ class FileViewTool(BaseTool):
             for i, line in enumerate(window)
         )
 
+        # 6. 在输出尾部给出下一次 file_view 的建议，相当于轻量分页导航。
         nav = ""
         if end_line < total:
             nav = f"\n[Lines {start_line}–{end_line} of {total}. Next: file_view path={path} start_line={end_line + 1}]"
@@ -219,15 +231,19 @@ class FileWriteTool(BaseTool):
         }
 
     def execute(self, params: dict[str, Any]) -> ToolResult:
+        # 1. file_write 是全量覆盖写入，因此 content 必须由 LLM 一次性给完整。
         path = Path(params.get("path", ""))
         content = params.get("content", "")
 
         try:
+            # 2. 自动创建父目录，降低新建文件时的操作成本。
             path.parent.mkdir(parents=True, exist_ok=True)
+            # 3. 覆盖写入目标文件；这里不做 diff/patch，只负责落盘。
             path.write_text(content, encoding="utf-8")
         except OSError as e:
             return ToolResult(success=False, output="", error=str(e))
 
+        # 4. 返回写入行数，给 Agent 一个可读的确认信号。
         line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
         return ToolResult(
             success=True,
