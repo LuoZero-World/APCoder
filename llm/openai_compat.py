@@ -220,6 +220,11 @@ def _parse_openai_response(choice: Any, thought: str) -> Action:
 
     if finish_reason == "stop":
         if thought and thought != "(no thought)":
+            # 尝试兼容部分模型把工具调用当普通文本输出的格式（Action: xxx Params: {...}）
+            text_action = _try_parse_action_text(thought)
+            if text_action is not None:
+                return text_action
+    
             return Action(
                 action_type=ActionType.FINISH,
                 thought="",      # 普通 chat 模型没有独立推理链，thought 置空
@@ -352,6 +357,43 @@ def _try_parse_tool_json(json_str: str, thought: str) -> Action | None:
         action_type=ActionType.TOOL_CALL,
         thought=thought,
         tool_call=ToolCall(name=tool_name, params=params if isinstance(params, dict) else {}),
+    )
+
+
+_ACTION_LINE_RE = re.compile(r"(?im)^\s*Action\s*:\s*([A-Za-z_][\w.-]*)\s*$")
+_PARAMS_LINE_RE = re.compile(r"(?is)^\s*Params\s*:\s*(\{.*?\})\s*$", re.MULTILINE)
+
+
+def _try_parse_action_text(text: str) -> Action | None:
+    """
+    兼容部分 OpenAI-compatible 模型把工具调用当普通文本输出：
+        Thought: ...
+        Action: search_text
+        Params: {"pattern": "..."}
+    """
+    action_match = _ACTION_LINE_RE.search(text)
+    if not action_match:
+        return None
+
+    thought_text = text[:action_match.start()].strip()
+    if thought_text.lower().startswith("thought:"):
+        thought_text = thought_text[len("thought:"):].strip()
+    thought_text = thought_text or "(no thought)"
+
+    params: dict[str, Any] = {}
+    params_match = _PARAMS_LINE_RE.search(text)
+    if params_match:
+        try:
+            parsed = json.loads(params_match.group(1))
+            if isinstance(parsed, dict):
+                params = parsed
+        except json.JSONDecodeError:
+            params = {"raw": params_match.group(1)}
+
+    return Action(
+        action_type=ActionType.TOOL_CALL,
+        thought=thought_text,
+        tool_call=ToolCall(name=action_match.group(1), params=params),
     )
 
 

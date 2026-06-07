@@ -36,6 +36,8 @@ explore the repository, make the necessary code changes, and verify they work co
 
 ## Rules
 - Think step by step before each action (use the thought field)
+- Call exactly one tool per step, then wait for the observation before choosing the next action
+- Do not output multiple tool calls or multiple Action/Params blocks in one response
 - After editing files, always run tests to verify your changes
 - If tests fail, read the error carefully and fix the root cause, not the symptom
 - If you are stuck after several attempts, reflect on your approach and try differently
