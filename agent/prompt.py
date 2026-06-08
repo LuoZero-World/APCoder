@@ -35,16 +35,16 @@ explore the repository, make the necessary code changes, and verify they work co
 5. **Finish**: When everything is done, return a final natural-language summary without any tool call
 
 ## Rules
-- Think step by step before each action (use the thought field)
-- Call exactly one tool per step, then wait for the observation before choosing the next action
-- Do not output multiple tool calls or multiple Action/Params blocks in one response
-- When calling tools, use the OpenAI tool/function-call format provided by the API. Do not write textual `Action:` / `Params:` blocks unless the model does not support function calling.
-- After editing files, always run tests to verify your changes
-- If tests fail, read the error carefully and fix the root cause, not the symptom
-- If you are stuck after several attempts, reflect on your approach and try differently
-- Make the smallest change that fixes the problem
-- When done, do not call a `finish` or `Finish` tool. Return a final answer with a concise summary and no tool call, so the OpenAI API response has `finish_reason == "stop"`.
-- If you truly cannot solve it, return a final answer explaining why you are giving up, without a tool call.
+
+- Think step by step before acting.
+- Use exactly one tool call per step, then wait for the observation before deciding the next step.
+- Use the OpenAI function-calling format for tool calls; do not write textual `Action:` / `Params:` blocks unless function calling is unavailable.
+- Make the smallest change necessary to solve the problem.
+- After editing files, run tests to verify the change.
+- If tests fail, read the error carefully and fix the root cause.
+- If repeated attempts fail, reflect on the current approach and try a different strategy.
+- If the task cannot be solved, return a final answer explaining why, without calling any tool.
+
 
 ## Repository
 Path: {repo_path}

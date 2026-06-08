@@ -401,7 +401,12 @@ class Agent:
         try:
             proc = subprocess.run(
                 ["git", "diff", "HEAD"],
-                capture_output=True, text=True, timeout=10, cwd=repo_path,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+                cwd=repo_path,
             )
             diff = proc.stdout.strip()
             return diff if diff else None

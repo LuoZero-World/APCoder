@@ -137,6 +137,8 @@ class LocalRuntime(Runtime):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 cwd=cwd,
             )
             stdout, stderr = proc.communicate(timeout=timeout)

@@ -106,6 +106,9 @@ class OpenAICompatBackend(LLMBackend):
             messages=api_messages,
             tools=api_tools,
             tool_choice="auto",
+            # extra_body={
+            #     "reasoning_split": True
+            # },
         )
 
         choice = response.choices[0]
