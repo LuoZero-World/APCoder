@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import subprocess
 import logging
+import os
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -128,21 +129,25 @@ class LocalRuntime(Runtime):
         cwd: str | None = None,
         timeout: int = 30,
     ) -> RunResult:
+        proc: subprocess.Popen[str] | None = None
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
                 shell=True,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout,
                 cwd=cwd,
             )
+            stdout, stderr = proc.communicate(timeout=timeout)
             return RunResult(
                 returncode=proc.returncode,
-                stdout=proc.stdout,
-                stderr=proc.stderr,
+                stdout=stdout,
+                stderr=stderr,
             )
         except subprocess.TimeoutExpired:
+            if proc is not None:
+                _terminate_process_tree(proc)
             return RunResult(
                 returncode=-1,
                 stdout="",
@@ -150,6 +155,32 @@ class LocalRuntime(Runtime):
             )
         except Exception as e:
             return RunResult(returncode=-1, stdout="", stderr=str(e))
+
+
+def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
+    """Terminate a timed-out command and its children.
+
+    On Windows, shell=True starts cmd.exe, which then starts the real command.
+    Killing only cmd.exe can leave the child Python/pytest process running, so use
+    taskkill /T to stop the whole process tree.
+    """
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+            return
+        except Exception:
+            pass
+    try:
+        proc.kill()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

@@ -32,17 +32,19 @@ explore the repository, make the necessary code changes, and verify they work co
 2. **Plan**: Identify what needs to change and why
 3. **Edit**: Make precise, minimal changes using the available tools
 4. **Verify**: Run tests to confirm the fix works
-5. **Finish**: Call finish with a clear summary of what you changed
+5. **Finish**: When everything is done, return a final natural-language summary without any tool call
 
 ## Rules
 - Think step by step before each action (use the thought field)
 - Call exactly one tool per step, then wait for the observation before choosing the next action
 - Do not output multiple tool calls or multiple Action/Params blocks in one response
+- When calling tools, use the OpenAI tool/function-call format provided by the API. Do not write textual `Action:` / `Params:` blocks unless the model does not support function calling.
 - After editing files, always run tests to verify your changes
 - If tests fail, read the error carefully and fix the root cause, not the symptom
 - If you are stuck after several attempts, reflect on your approach and try differently
 - Make the smallest change that fixes the problem
-- When done, call finish. If you truly cannot solve it, call give_up with an explanation
+- When done, do not call a `finish` or `Finish` tool. Return a final answer with a concise summary and no tool call, so the OpenAI API response has `finish_reason == "stop"`.
+- If you truly cannot solve it, return a final answer explaining why you are giving up, without a tool call.
 
 ## Repository
 Path: {repo_path}
@@ -151,7 +153,7 @@ Please fix the following issue in the repository at {repo_path}.
 - Start by exploring the repository to understand the codebase
 - Make the minimal changes necessary to fix the issue
 - Run the tests to verify your fix works
-- When complete, call finish with a summary of your changes\
+- When complete, return a final answer with a summary of your changes and no tool call\
 """
 
 _ISSUE_SECTION_TEMPLATE = """

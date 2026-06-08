@@ -379,7 +379,6 @@ def _try_parse_action_text(text: str) -> Action | None:
     if thought_text.lower().startswith("thought:"):
         thought_text = thought_text[len("thought:"):].strip()
     thought_text = thought_text or "(no thought)"
-
     params: dict[str, Any] = {}
     params_match = _PARAMS_LINE_RE.search(text)
     if params_match:

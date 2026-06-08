@@ -20,7 +20,7 @@ from tools.base import BaseTool, ToolResult
 from tools.runtime import LocalRuntime, Runtime
 
 
-PYTEST_TIMEOUT = 120        # pytest 默认超时，比 shell 工具更长
+PYTEST_TIMEOUT = 20        # pytest 默认超时，比 shell 工具更长
 MAX_OUTPUT_CHARS = 6_000    # 测试输出比普通 shell 输出更容易很长
 
 
