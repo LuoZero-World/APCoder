@@ -1,9 +1,9 @@
 """
 tools/file_edit_tool.py
 
-Search/Replace Block based file editing.
+基于 Search/Replace Block 的安全文件编辑工具。
 
-The model provides one or more blocks in this format:
+模型需要输出一个或多个如下格式的编辑块：
 
     path/to/file.py
     <<<<<<< SEARCH
@@ -12,9 +12,8 @@ The model provides one or more blocks in this format:
     new code
     >>>>>>> REPLACE
 
-This module parses those blocks, checks that every SEARCH snippet matches
-exactly once, produces a unified diff preview, and writes all affected files
-only after every edit has passed validation.
+本模块负责解析这些编辑块，检查每个 SEARCH 片段是否精确命中一次，
+生成 unified diff 预览，并且只在所有编辑都通过校验后才写入文件。
 """
 
 from __future__ import annotations
@@ -35,12 +34,12 @@ PathPolicy = Callable[[Path], bool]
 
 
 class FileEditError(ValueError):
-    """Raised when parsing or applying Search/Replace Blocks fails."""
+    """解析或应用 Search/Replace Block 失败时抛出的受控异常。"""
 
 
 @dataclass(frozen=True)
 class SearchReplaceEdit:
-    """A parsed model edit before it is checked against the filesystem."""
+    """模型编辑块解析后的结构化表示，尚未访问文件系统校验。"""
 
     path: str
     search: str
@@ -49,7 +48,7 @@ class SearchReplaceEdit:
 
 @dataclass(frozen=True)
 class PreparedFileEdit:
-    """The final in-memory update for one file."""
+    """某个文件在内存中计算出的最终修改结果。"""
 
     path: Path
     original: str
@@ -58,7 +57,7 @@ class PreparedFileEdit:
 
 @dataclass(frozen=True)
 class EditPlan:
-    """A validated set of edits ready for preview or apply."""
+    """已经通过 dry-run 校验、可用于预览或写入的一组编辑计划。"""
 
     edits: list[SearchReplaceEdit]
     files: list[PreparedFileEdit]
@@ -67,7 +66,7 @@ class EditPlan:
 
 @dataclass(frozen=True)
 class ApplyResult:
-    """Result returned after edits are written to disk."""
+    """编辑成功写入磁盘后的结果。"""
 
     files_written: int
     diff: str
@@ -75,11 +74,10 @@ class ApplyResult:
 
 def parse_search_replace_blocks(text: str) -> list[SearchReplaceEdit]:
     """
-    Parse model output into structured edits.
+    将模型输出解析为结构化编辑对象。
 
-    The parser is intentionally strict around markers. Extra prose before,
-    after, or between complete blocks is ignored, but a malformed block fails
-    the whole parse so the model can repair its output on the next turn.
+    解析器会严格检查标记行。完整 block 前后或 block 之间的额外说明文字会被忽略；
+    但只要出现格式不完整的 block，就会让整个解析失败，方便下一轮让模型修正输出。
     """
     lines = text.splitlines(keepends=True)
     edits: list[SearchReplaceEdit] = []
@@ -129,10 +127,10 @@ def dry_run_edits(
     path_policy: PathPolicy | None = None,
 ) -> EditPlan:
     """
-    Validate edits and prepare final file contents without writing to disk.
+    在不写入磁盘的情况下校验编辑，并计算每个文件的最终内容。
 
-    Multiple edits against the same file are applied in the order provided, in
-    memory. Any failure aborts the whole plan.
+    同一个文件上的多个编辑会按模型给出的顺序在内存中依次应用。
+    任何一个编辑失败，整个计划都会中止。
     """
     if not edits:
         raise FileEditError("Apply failed: no edits to apply.")
@@ -179,11 +177,10 @@ def resolve_edit_path(
     path_policy: PathPolicy | None = None,
 ) -> Path:
     """
-    Resolve an edit path and run the optional future permission hook.
+    解析编辑路径，并调用预留的权限检查钩子。
 
-    The default policy allows all paths. Callers can pass path_policy later to
-    enforce sandbox, allowlist, symlink, or repo-boundary rules without changing
-    the parser or apply pipeline.
+    默认不做额外权限限制。以后调用方可以通过 path_policy 接入 sandbox、
+    allowlist、软链接逃逸检查或 repo 边界检查，而不用改解析和应用流程。
     """
     if not path_text or not path_text.strip():
         raise FileEditError("Apply failed: path is empty.")
@@ -203,7 +200,7 @@ def resolve_edit_path(
 
 
 def make_diff_preview(files: list[PreparedFileEdit], repo_root: str | Path = ".") -> str:
-    """Build a unified diff preview for all changed files."""
+    """为所有发生变化的文件生成 unified diff 预览。"""
     root = Path(repo_root).resolve()
     chunks: list[str] = []
 
@@ -226,12 +223,11 @@ def make_diff_preview(files: list[PreparedFileEdit], repo_root: str | Path = "."
 
 def apply_edits_atomically(plan: EditPlan) -> ApplyResult:
     """
-    Write all prepared files, aborting if any file changed after dry-run.
+    将所有准备好的文件写入磁盘；如果 dry-run 后文件发生变化，则中止写入。
 
-    Cross-file writes cannot be perfectly atomic on a normal filesystem, so this
-    function uses a practical transaction: preflight every file, write only
-    after all preflight checks pass, and roll back already-written files if a
-    later write raises an OSError.
+    普通文件系统很难提供真正的跨文件事务，因此这里采用实用型事务策略：
+    先复查所有文件，全部通过后才开始写入；如果后续某个文件写入失败，
+    则尽力把已经写入的文件恢复为原内容。
     """
     changed_files = [file_edit for file_edit in plan.files if file_edit.original != file_edit.updated]
 
@@ -248,7 +244,7 @@ def apply_edits_atomically(plan: EditPlan) -> ApplyResult:
             _write_text(file_edit.path, file_edit.updated)
             written.append(file_edit)
     except OSError as exc:
-        # Best-effort rollback keeps the workspace coherent after partial I/O.
+        # 尽力回滚已经写入的文件，降低部分写入导致工作区不一致的风险。
         for file_edit in reversed(written):
             try:
                 _write_text(file_edit.path, file_edit.original)
@@ -260,7 +256,7 @@ def apply_edits_atomically(plan: EditPlan) -> ApplyResult:
 
 
 class FileEditTool(BaseTool):
-    """Tool wrapper for Search/Replace Block editing."""
+    """Search/Replace Block 编辑能力的工具封装。"""
 
     def __init__(
         self,
@@ -277,9 +273,11 @@ class FileEditTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Apply Search/Replace Blocks safely. Parses model edits, dry-runs "
-            "exact SEARCH matches, returns a unified diff preview, and writes "
-            "all files only if every edit succeeds."
+            "Preferred tool for modifying existing files. Apply precise "
+            "Search/Replace Blocks safely: parse model edits, dry-run exact "
+            "SEARCH matches, return a unified diff preview, and write all "
+            "files only if every edit succeeds. Use file_write only for new "
+            "files or intentional full-file rewrites."
         )
 
     @property
@@ -310,6 +308,7 @@ class FileEditTool(BaseTool):
         try:
             edits = parse_search_replace_blocks(edits_text)
             plan = dry_run_edits(edits, self._repo_root, self._path_policy)
+            # 开启 dry_run 后不写入磁盘，直接返回校验结果和 diff 预览。
             if dry_run:
                 return ToolResult(
                     success=True,
@@ -348,7 +347,7 @@ def _looks_like_marker(text: str) -> bool:
 
 
 def _read_text_preserving_newlines(path: Path) -> str:
-    # newline="" disables universal newline conversion, preserving exact text.
+    # newline="" 会关闭通用换行转换，尽量保留文件原始文本。
     with path.open("r", encoding="utf-8", errors="replace", newline="") as handle:
         return handle.read()
 
@@ -360,11 +359,10 @@ def _write_text(path: Path, content: str) -> None:
 
 def _adapt_edit_newlines(search: str, replace: str, file_content: str) -> tuple[str, str]:
     """
-    Match common model output against CRLF files without changing intent.
+    让常见的 LF 模型输出可以匹配 CRLF 文件，同时不改变编辑意图。
 
-    Models usually emit LF snippets. If the target file is mostly CRLF and the
-    snippet does not already contain CRLF, adapt both SEARCH and REPLACE to CRLF
-    before exact matching.
+    模型通常输出 LF 片段。如果目标文件主要使用 CRLF，且片段本身没有 CRLF，
+    则在精确匹配前把 SEARCH 和 REPLACE 一起转换为 CRLF。
     """
     newline = _dominant_newline(file_content)
     if newline == "\r\n":

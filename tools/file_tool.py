@@ -209,8 +209,9 @@ class FileWriteTool(BaseTool):
     def description(self) -> str:
         return (
             "Write content to a file, replacing its entire contents. "
-            "Parent directories are created automatically. "
-            "Always read the file first before writing to avoid losing existing content."
+            "Use this for new files or intentional full-file rewrites. "
+            "For modifying existing files, prefer file_edit with Search/Replace Blocks. "
+            "Always read the file first before overwriting an existing file."
         )
 
     @property

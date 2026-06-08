@@ -62,9 +62,10 @@ def magenta(t: str) -> str: return _c(t, "35")
 # 构建 agent 各组件
 # ---------------------------------------------------------------------------
 
-def _build_registry(cfg, confirm_callback=None, runtime=None):
+def _build_registry(cfg, confirm_callback=None, runtime=None, repo_path=None):
     """根据配置组装工具注册表。"""
     from tools.base import ToolRegistry
+    from tools.file_edit_tool import FileEditTool
     from tools.file_tool import FileReadTool, FileViewTool, FileWriteTool
     from tools.git_tool import GitAddTool, GitCommitTool, GitDiffTool, GitStatusTool
     from tools.search_tool import FindFilesTool, FindSymbolTool, SearchTextTool
@@ -77,6 +78,7 @@ def _build_registry(cfg, confirm_callback=None, runtime=None):
         .register(FileReadTool())
         .register(FileViewTool())
         .register(FileWriteTool())
+        .register(FileEditTool(repo_root=repo_path or "."))
         .register(SearchTextTool())
         .register(FindFilesTool())
         .register(FindSymbolTool())
@@ -240,7 +242,12 @@ def run(
     runtime = create_runtime(sandbox=sandbox, repo_path=str(repo_path)) if sandbox else None
     if sandbox:
         click.echo(dim(f"  Sandbox: Docker ({runtime.name})"))
-    registry = _build_registry(config, confirm_callback=confirm_cb, runtime=runtime)
+    registry = _build_registry(
+        config,
+        confirm_callback=confirm_cb,
+        runtime=runtime,
+        repo_path=repo_path,
+    )
 
     from agent.core import Agent, AgentConfig
     from agent.event_log import EventLog, summarize_run
@@ -363,7 +370,7 @@ def chat(
         click.echo(red(f"Error: {e}"), err=True)
         sys.exit(1)
 
-    registry = _build_registry(config)
+    registry = _build_registry(config, repo_path=repo_path)
     from tools.shell_tool import terminal_confirm
     from tools.runtime import create_runtime
     runtime = create_runtime(sandbox=sandbox, repo_path=str(repo_path)) if sandbox else None
