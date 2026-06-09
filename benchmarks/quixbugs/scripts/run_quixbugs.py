@@ -213,7 +213,7 @@ def _run_agent_worker(
             }
         )
         tracking_backend = TokenTrackingBackend(backend)
-        registry = _build_registry(config, confirm_callback=None, runtime=None)
+        registry = _build_registry(config, runtime=None)
         agent_config = AgentConfig(
             max_steps=config.agent.max_steps,
             budget_tokens=config.agent.budget_tokens,
@@ -221,8 +221,8 @@ def _run_agent_worker(
             stream=True,
             stream_callback=lambda _text: None,
             thought_callback=lambda _text: None,
-            confirm_dangerous=False,
-            confirm_callback=None,
+            permission_mode="yolo",
+            permission_callback=None,
         )
         agent = Agent(tracking_backend, registry, agent_config)
         task = Task(

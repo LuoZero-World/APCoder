@@ -15,7 +15,7 @@ import pytest
 from tools.file_tool import FileReadTool, FileViewTool, FileWriteTool
 from tools.git_tool import GitAddTool, GitCommitTool, GitDiffTool, GitStatusTool
 from tools.search_tool import FindFilesTool, FindSymbolTool, SearchTextTool
-from tools.shell_tool import ShellTool, _check_blocked, _truncate
+from tools.shell_tool import ShellTool, _truncate
 from tools.test_tool import PytestTool
 
 
@@ -198,7 +198,7 @@ class TestShellTool:
         assert "Exit code" in result.error
 
     def test_timeout(self):
-        result = self.tool.execute({"cmd": "sleep 10", "timeout": 1})
+        result = self.tool.execute({"cmd": "python -c \"import time; time.sleep(10)\"", "timeout": 1})
         assert not result.success
         assert "timed out" in result.error.lower()
 
@@ -211,26 +211,9 @@ class TestShellTool:
         assert not result.success
 
     def test_cwd_respected(self, tmp_path):
-        result = self.tool.execute({"cmd": "pwd", "cwd": str(tmp_path)})
+        result = self.tool.execute({"cmd": "python -c \"import os; print(os.getcwd())\"", "cwd": str(tmp_path)})
         assert result.success
         assert str(tmp_path) in result.output
-
-
-class TestShellBlacklist:
-    def test_rm_rf_root_blocked(self):
-        assert _check_blocked("rm -rf /") is not None
-
-    def test_rm_rf_home_blocked(self):
-        assert _check_blocked("rm -rf ~") is not None
-
-    def test_normal_rm_allowed(self):
-        assert _check_blocked("rm myfile.txt") is None
-
-    def test_echo_allowed(self):
-        assert _check_blocked("echo hello") is None
-
-    def test_case_insensitive(self):
-        assert _check_blocked("RM -RF /") is not None
 
 
 class TestShellTruncate:

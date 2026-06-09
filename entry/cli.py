@@ -62,7 +62,7 @@ def magenta(t: str) -> str: return _c(t, "35")
 # 构建 agent 各组件
 # ---------------------------------------------------------------------------
 
-def _build_registry(cfg, confirm_callback=None, runtime=None, repo_path=None):
+def _build_registry(cfg, runtime=None, repo_path=None):
     """根据配置组装工具注册表。"""
     from tools.base import ToolRegistry
     from tools.file_edit_tool import FileEditTool
@@ -74,7 +74,7 @@ def _build_registry(cfg, confirm_callback=None, runtime=None, repo_path=None):
 
     return (
         ToolRegistry()
-        .register(ShellTool(confirm_callback=confirm_callback, runtime=runtime))
+        .register(ShellTool(runtime=runtime))
         .register(FileReadTool())
         .register(FileViewTool())
         .register(FileWriteTool())
@@ -171,7 +171,13 @@ def cli(ctx: click.Context, config: str | None) -> None:
 @click.option("--provider", "-p", default=None, help="Override LLM provider")
 @click.option("--max-steps", default=None, type=int, help="Override max steps")
 @click.option("--stream", "-s", is_flag=True, default=True, help="Enable streaming output (default: on)")
-@click.option("--confirm", is_flag=True, default=False, help="Ask confirmation before running dangerous shell commands")
+@click.option(
+    "--permission-mode",
+    type=click.Choice(["confirm", "human", "yolo"]),
+    default="yolo",
+    show_default=True,
+    help="Permission mode for tool calls",
+)
 @click.option("--sandbox", is_flag=True, default=False, help="Run commands in Docker sandbox (requires Docker)")
 @click.option("--verbose", "-v", is_flag=True, help="Show debug logs")
 @click.pass_context
@@ -184,7 +190,7 @@ def run(
     provider: str | None,
     max_steps: int | None,
     stream: bool,
-    confirm: bool,
+    permission_mode: str,
     sandbox: bool,
     verbose: bool,
 ) -> None:
@@ -236,15 +242,14 @@ def run(
         click.echo(red(f"Error: {e}"), err=True)
         sys.exit(1)
 
-    from tools.shell_tool import terminal_confirm
+    from agent.permission import terminal_confirm
     from tools.runtime import create_runtime
-    confirm_cb = terminal_confirm if confirm else None
+    permission_cb = terminal_confirm if permission_mode in ("confirm", "human") else None
     runtime = create_runtime(sandbox=sandbox, repo_path=str(repo_path)) if sandbox else None
     if sandbox:
         click.echo(dim(f"  Sandbox: Docker ({runtime.name})"))
     registry = _build_registry(
         config,
-        confirm_callback=confirm_cb,
         runtime=runtime,
         repo_path=repo_path,
     )
@@ -276,8 +281,8 @@ def run(
         stream=stream,
         stream_callback=_stream_cb if stream else None,
         thought_callback=_thought_cb if stream else None,
-        confirm_dangerous=confirm,
-        confirm_callback=confirm_cb,
+        permission_mode=permission_mode,
+        permission_callback=permission_cb,
     )
     agent = Agent(backend, registry, agent_config)
 
@@ -328,6 +333,13 @@ def run(
 @click.option("--model", "-m", default=None, help="Override LLM model name")
 @click.option("--provider", "-p", default=None, help="Override LLM provider")
 @click.option("--max-steps", default=None, type=int, help="Max steps per round")
+@click.option(
+    "--permission-mode",
+    type=click.Choice(["confirm", "human", "yolo"]),
+    default="confirm",
+    show_default=True,
+    help="Permission mode for tool calls",
+)
 @click.option("--sandbox", is_flag=True, default=False, help="Run commands in Docker sandbox (requires Docker)")
 @click.option("--verbose", "-v", is_flag=True, help="Show debug logs")
 @click.pass_context
@@ -337,6 +349,7 @@ def chat(
     model: str | None,
     provider: str | None,
     max_steps: int | None,
+    permission_mode: str,
     sandbox: bool,
     verbose: bool,
 ) -> None:
@@ -371,8 +384,9 @@ def chat(
         sys.exit(1)
 
     registry = _build_registry(config, repo_path=repo_path)
-    from tools.shell_tool import terminal_confirm
+    from agent.permission import terminal_confirm
     from tools.runtime import create_runtime
+    permission_cb = terminal_confirm if permission_mode in ("confirm", "human") else None
     runtime = create_runtime(sandbox=sandbox, repo_path=str(repo_path)) if sandbox else None
     if sandbox:
         click.echo(dim(f"  Sandbox: Docker ({runtime.name})"))
@@ -382,7 +396,8 @@ def chat(
         config=config,
         repo_path=str(repo_path),
         log_dir=config.agent.log_dir,
-        confirm_callback=terminal_confirm,   # chat 模式默认开启确认
+        permission_mode=permission_mode,
+        permission_callback=permission_cb,
     )
 
     # 欢迎信息

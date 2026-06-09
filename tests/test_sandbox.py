@@ -67,7 +67,7 @@ class TestLocalRuntime:
     def test_exec_with_cwd(self, tmp_path):
         (tmp_path / "test.txt").write_text("content")
         rt = LocalRuntime()
-        result = rt.exec("ls", cwd=str(tmp_path))
+        result = rt.exec("python -c \"import os; print(os.listdir())\"", cwd=str(tmp_path))
         assert result.success
         assert "test.txt" in result.output
 
@@ -79,7 +79,7 @@ class TestLocalRuntime:
 
     def test_exec_timeout(self):
         rt = LocalRuntime()
-        result = rt.exec("sleep 10", timeout=1)
+        result = rt.exec("python -c \"import time; time.sleep(10)\"", timeout=1)
         assert not result.success
         assert "timed out" in result.stderr.lower()
 
@@ -126,22 +126,13 @@ class TestShellToolWithRuntime:
         assert len(calls) == 1
         assert calls[0] == "echo hello"
 
-    def test_blocked_command_never_reaches_runtime(self):
+    def test_shell_tool_does_not_apply_permission_checks(self):
         mock_rt = MagicMock()
+        mock_rt.exec.return_value = RunResult(0, "ok", "")
         tool = ShellTool(runtime=mock_rt)
         result = tool.execute({"cmd": "rm -rf /"})
-        assert not result.success
-        assert "blocked" in result.error.lower()
-        mock_rt.exec.assert_not_called()
-
-    def test_denied_command_never_reaches_runtime(self):
-        from tools.shell_tool import always_deny
-        mock_rt = MagicMock()
-        tool = ShellTool(confirm_callback=always_deny, runtime=mock_rt)
-        result = tool.execute({"cmd": "pip install requests"})
-        assert not result.success
-        mock_rt.exec.assert_not_called()
-
+        assert result.success
+        mock_rt.exec.assert_called_once()
 
 # ===========================================================================
 # PytestTool with runtime

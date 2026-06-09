@@ -32,12 +32,13 @@ from agent.prompt import (
     reflection_no_edit,
     reflection_test_failed,
 )
+from agent.permission import PermissionManager
 from agent.task import (
     Action, ActionType, Event, EventType,
     Observation, ObservationStatus, RunResult, RunStatus, Task, ToolCall,
 )
 from llm.base import LLMBackend, LLMMessage, LLMToolSchema
-from tools.base import ToolRegistry
+from tools.base import ToolRegistry, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +61,9 @@ class AgentConfig:
     stream: bool = False                   # 是否启用流式输出
     stream_callback: object = None         # StreamCallback，最终回答流式回调
     thought_callback: object = None        # StreamCallback，推理过程流式回调（推理模型专用）
-    confirm_dangerous: bool = False        # 是否对危险命令要求用户确认
-    confirm_callback: object = None        # ConfirmCallback，None=跳过确认
+    permission_mode: str = "yolo"          # 权限模式：confirm / human / yolo
+    permission_callback: object = None     # 权限询问回调，返回 True=允许 / False=拒绝
+    permission_rules: object = None        # 自定义权限规则；None 时使用默认规则
 
 
 
@@ -87,6 +89,11 @@ class Agent:
         self._backend = backend
         self._registry = registry
         self._cfg = config or AgentConfig()
+        self._permission_callback = self._cfg.permission_callback
+        self._permission = PermissionManager(
+            mode=self._cfg.permission_mode,
+            rules=self._cfg.permission_rules,
+        )
 
     # ------------------------------------------------------------------
     # 公开接口
@@ -201,7 +208,7 @@ class Agent:
             # ── 5. 执行工具 ─────────────────────────────────────────────
             if action.action_type == ActionType.TOOL_CALL and action.tool_call:
                 tc = action.tool_call
-                result = self._registry.execute_tool(tc.name, tc.params)
+                result = self._execute_tool_with_permission(tc)
                 observation = result.to_observation(tc.name)
 
                 # 追踪是否有文件写操作
@@ -394,6 +401,42 @@ class Agent:
                     delay *= 2
 
         raise last_exc  # type: ignore[misc]
+
+    def _execute_tool_with_permission(self, tool_call: ToolCall) -> ToolResult:
+        """在执行工具前统一经过权限系统。"""
+        decision = self._permission.check(tool_call.name, tool_call.params)
+
+        if decision.behavior == "deny":
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Permission denied: {decision.reason}",
+            )
+
+        if decision.behavior == "ask":
+            callback = self._permission_callback
+            if callback is None:
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=f"Permission required but no callback is configured: {decision.reason}",
+                )
+
+            try:
+                allowed = callback(tool_call.name, tool_call.params, decision.reason)
+            except TypeError:
+                # 兼容极早期只接收 cmd 字符串的 shell confirm 回调。
+                cmd = tool_call.params.get("cmd") or tool_call.params.get("command") or str(tool_call.params)
+                allowed = callback(cmd)
+
+            if not allowed:
+                return ToolResult(
+                    success=False,
+                    output="",
+                    error=f"Permission rejected by user: {decision.reason}",
+                )
+
+        return self._registry.execute_tool(tool_call.name, tool_call.params)
 
     def _get_git_diff(self, repo_path: str) -> str | None:
         """抓取 git diff HEAD 作为 patch，失败时静默返回 None。"""

@@ -1,121 +1,37 @@
 """
 tools/shell_tool.py
 
-Shell 命令执行工具。四层防护：
-1. 黑名单：拒绝明显破坏性命令（硬拦截，不可绕过）
-2. 白名单：只读命令免确认直接执行
-3. 权限确认：写操作等待用户 y/n（可通过 confirm_callback 注入）
-4. Timeout + 输出截断：防挂起、防上下文爆炸
+Shell 命令执行工具。
 
-权限确认设计：
-- confirm_callback 是一个 Callable[[str], bool]，返回 True 表示允许
-- 默认 None（不确认，直接执行）——用于 run 模式
-- chat 模式 / 交互模式传入真实的终端确认函数
-- 测试时传入 mock，不需要真实终端
+注意：本工具不做权限判断。是否允许执行 shell 命令由 agent.permission
+和 agent loop 统一决定；ShellTool 只负责把已经获准的命令交给 runtime 执行。
 """
 
 from __future__ import annotations
 
-import re
-import subprocess
-from typing import Any, Callable
+from typing import Any
 
 from tools.base import BaseTool, ToolResult
 from tools.runtime import LocalRuntime, Runtime
 
 
-# ---------------------------------------------------------------------------
-# 配置常量
-# ---------------------------------------------------------------------------
-
 MAX_OUTPUT_CHARS = 8_000
 
-# 硬拦截黑名单（永不执行，不问用户）
-_BLOCKED_PATTERNS: tuple[str, ...] = (
-    "rm -rf /",
-    "rm -rf ~",
-    "mkfs",
-    "dd if=",
-    ":(){:|:&};:",       # fork bomb
-    "chmod -R 777 /",
-    "chown -R",
-    "> /dev/sda",
-)
-
-# 只读命令前缀白名单（直接执行，不询问）
-_READONLY_PREFIXES: tuple[str, ...] = (
-    "ls", "ll", "la",
-    "cat", "head", "tail", "less", "more",
-    "echo", "printf",
-    "pwd", "whoami", "which", "type",
-    "find", "locate",
-    "grep", "egrep", "fgrep", "rg", "ag",
-    "wc", "sort", "uniq", "cut", "awk", "sed -n",
-    "diff", "diff3",
-    "file", "stat",
-    "python -c", "python3 -c",
-    "python -m pytest", "python3 -m pytest", "pytest",
-    "git status", "git diff", "git log", "git show",
-    "git branch", "git tag", "git remote",
-    "git stash list",
-    "tree",
-    "env", "printenv",
-    "ps", "top", "htop",
-    "df", "du",
-    "uname", "hostname",
-    "date", "cal",
-    "man", "help",
-)
-
-# 需要确认的危险命令关键词（白名单之外且包含这些词时必须确认）
-_CONFIRM_KEYWORDS: tuple[str, ...] = (
-    "rm ", "rmdir",
-    "mv ",
-    "cp -r", "cp -f",
-    "chmod", "chown",
-    "pip install", "pip uninstall",
-    "npm install", "npm uninstall",
-    "git commit", "git push", "git reset",
-    "git checkout", "git merge", "git rebase",
-    "git clean",
-    "sudo",
-    "curl", "wget",            # 网络请求
-    "kill", "pkill", "killall",
-    "shutdown", "reboot",
-    "docker", "kubectl",
-    "make", "make install",
-    "> ",                      # 重定向覆盖（>> 追加不拦截）
-    "| tee ",
-)
-
-# 确认回调类型：接收命令字符串，返回 True=允许 / False=拒绝
-ConfirmCallback = Callable[[str], bool]
-
-
-# ---------------------------------------------------------------------------
-# ShellTool
-# ---------------------------------------------------------------------------
 
 class ShellTool(BaseTool):
     """
-    执行 shell 命令，返回 stdout + stderr。
+    执行 shell 命令并返回 stdout + stderr。
 
     params:
         cmd (str):     shell 命令字符串
-        timeout (int): 超时秒数（默认 30）
-        cwd (str):     工作目录（默认使用当前目录）
-
-    构造参数:
-        confirm_callback: 需要确认时调用，返回 True 表示用户允许执行。
-                          None 表示跳过确认（run 模式默认）。
+        timeout (int): 超时秒数，默认 30
+        cwd (str):     工作目录，可选
     """
 
     def __init__(
         self,
-        confirm_callback: ConfirmCallback | None = None,
         runtime: Runtime | None = None,
     ) -> None:
-        self._confirm_callback = confirm_callback
         self._runtime = runtime or LocalRuntime()
 
     @property
@@ -126,8 +42,9 @@ class ShellTool(BaseTool):
     def description(self) -> str:
         return (
             "Execute a shell command and return its output (stdout + stderr combined). "
-            "Timeout is 30s by default. Avoid long-running commands; "
-            "prefer targeted commands like 'grep', 'pytest tests/foo.py', 'git diff'."
+            "Timeout is 30s by default. Permission is checked by the agent before this "
+            "tool runs. Prefer targeted commands like 'rg', 'pytest tests/foo.py', "
+            "and 'git diff'."
         )
 
     @property
@@ -152,107 +69,29 @@ class ShellTool(BaseTool):
         }
 
     def execute(self, params: dict[str, Any]) -> ToolResult:
-        # 1. 读取命令参数；cmd 去掉首尾空白，timeout/cwd 允许 LLM 按需覆盖。
-        cmd: str = params.get("cmd", "").strip()
-        timeout: int = int(params.get("timeout", 30))
-        cwd: str | None = params.get("cwd", None)
+        """执行命令；权限检查必须已经在 agent loop 中完成。"""
+        cmd = str(params.get("cmd", "")).strip()
+        timeout = int(params.get("timeout", 30))
+        cwd = params.get("cwd", None)
 
-        # 2. 空命令没有执行意义，直接返回工具错误。
         if not cmd:
             return ToolResult(success=False, output="", error="cmd is required")
 
-        # 层 1：黑名单硬拦截
-        blocked = _check_blocked(cmd)
-        if blocked:
-            return ToolResult(
-                success=False,
-                output="",
-                error=f"Command blocked for safety: matched '{blocked}'",
-            )
-
-        # 层 2：白名单免确认
-        if not _needs_confirm(cmd):
-            # 只读命令或不命中危险关键词的命令，直接交给 runtime 执行。
-            return self._run(cmd, timeout, cwd)
-
-        # 层 3：权限确认
-        if self._confirm_callback is not None:
-            # chat/交互模式可注入确认回调；用户拒绝时不执行命令。
-            allowed = self._confirm_callback(cmd)
-            if not allowed:
-                return ToolResult(
-                    success=False,
-                    output="",
-                    error=f"Command rejected by user: {cmd!r}",
-                )
-        # confirm_callback 为 None → 跳过确认直接执行（run 模式）
-
-        return self._run(cmd, timeout, cwd)
-
-    # ------------------------------------------------------------------
-    # 内部
-    # ------------------------------------------------------------------
-
-    def _run(self, cmd: str, timeout: int, cwd: str | None) -> ToolResult:
-        """通过 runtime 执行命令（本地或 Docker 沙箱）。"""
-        # runtime 屏蔽本地/Docker 差异，ShellTool 只关心命令和结果。
         result = self._runtime.exec(cmd, cwd=cwd, timeout=timeout)
-        # 输出先截断再返回，避免一次 shell 输出占满上下文。
         output = _truncate(result.output, MAX_OUTPUT_CHARS)
-        if not result.success:
-            # 区分 timeout 和普通错误，error 字段包含可读原因
-            if "timed out" in result.stderr.lower():
-                error = result.stderr.strip()
-            else:
-                error = f"Exit code: {result.returncode}"
+
+        if result.success:
+            return ToolResult(success=True, output=output)
+
+        if "timed out" in result.stderr.lower():
+            error = result.stderr.strip()
         else:
-            error = None
-        return ToolResult(success=result.success, output=output, error=error)
-
-
-# ---------------------------------------------------------------------------
-# 辅助函数（对外暴露供测试）
-# ---------------------------------------------------------------------------
-
-def _check_blocked(cmd: str) -> str | None:
-    """返回匹配到的黑名单 pattern，没有匹配返回 None。"""
-    cmd_lower = cmd.lower()
-    for pattern in _BLOCKED_PATTERNS:
-        if pattern.lower() in cmd_lower:
-            return pattern
-    return None
-
-
-def _is_readonly(cmd: str) -> bool:
-    """
-    判断命令是否在只读白名单里。
-    包含 > 写重定向的命令不算只读（即使命令名在白名单里）。
-    """
-    # 包含写重定向（> 但不是 >>）时不算只读
-    # 用正则精确匹配：>[^>] 是写重定向，>> 是追加（相对安全）
-    import re as _re
-    if _re.search(r'(?<![>])>(?![>])', cmd):
-        return False
-    stripped = cmd.strip().lower()
-    for prefix in _READONLY_PREFIXES:
-        if stripped == prefix or stripped.startswith(prefix + " "):
-            return True
-    return False
-
-
-def _needs_confirm(cmd: str) -> bool:
-    """
-    判断命令是否需要用户确认。
-    不在白名单 且 包含危险关键词 → 需要确认。
-    """
-    if _is_readonly(cmd):
-        return False
-    cmd_lower = cmd.lower()
-    return any(kw in cmd_lower for kw in _CONFIRM_KEYWORDS)
+            error = f"Exit code: {result.returncode}"
+        return ToolResult(success=False, output=output, error=error)
 
 
 def _truncate(text: str, max_chars: int) -> str:
-    """输出过长时截断：保留头部 60% + 尾部 40%。"""
+    """输出过长时截断，保留头部 60% 和尾部 40%。"""
     if len(text) <= max_chars:
         return text
     head = int(max_chars * 0.6)
@@ -263,53 +102,3 @@ def _truncate(text: str, max_chars: int) -> str:
         + f"\n... [{omitted} characters truncated] ...\n"
         + text[-tail:]
     )
-
-
-# ---------------------------------------------------------------------------
-# 终端确认函数（在 cli/chat 里直接使用）
-# ---------------------------------------------------------------------------
-
-def terminal_confirm(cmd: str) -> bool:
-    """
-    在终端显示命令并等待用户确认。
-    返回 True 表示允许，False 表示拒绝。
-
-    显示格式：
-        ⚠  Agent wants to run:
-           $ git commit -m "fix parser"
-        Allow? [y/N/a(lways)] _
-    """
-    import sys
-
-    # 判断是否在交互式终端
-    if not sys.stdin.isatty():
-        # 非交互式（pipe / CI）：默认拒绝，避免意外执行
-        print(f"\n[confirm] Non-interactive terminal, rejecting: {cmd!r}", flush=True)
-        return False
-
-    print(f"\n\033[33m  ⚠  Agent wants to run:\033[0m")
-    print(f"     \033[1m$ {cmd}\033[0m")
-
-    while True:
-        try:
-            ans = input("  Allow? [y/N] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return False
-
-        if ans in ("y", "yes"):
-            return True
-        if ans in ("n", "no", ""):
-            print("  \033[31m✗ Rejected\033[0m")
-            return False
-        print("  Please enter y or n.")
-
-
-def always_allow(cmd: str) -> bool:
-    """跳过确认，直接允许（用于 --no-confirm 模式）。"""
-    return True
-
-
-def always_deny(cmd: str) -> bool:
-    """跳过确认，直接拒绝（用于测试或 CI 模式）。"""
-    return False

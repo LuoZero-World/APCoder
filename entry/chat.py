@@ -167,14 +167,24 @@ class ChatSession:
     - repo_map 缓存（换 repo 时自动失效）
     """
 
-    def __init__(self, backend, registry, config, repo_path: str, log_dir: str, confirm_callback=None) -> None:
+    def __init__(
+        self,
+        backend,
+        registry,
+        config,
+        repo_path: str,
+        log_dir: str,
+        permission_mode: str = "confirm",
+        permission_callback=None,
+    ) -> None:
         from agent.core import Agent, AgentConfig
         from context.history import ConversationHistory
 
         self.repo_path = repo_path
         self.log_dir = log_dir
         self.config = config
-        self._confirm_callback = confirm_callback
+        self._permission_mode = permission_mode
+        self._permission_callback = permission_callback
 
         # 流式回调：每个 token 立刻 flush 到终端
         _stream_started = [False]
@@ -219,8 +229,8 @@ class ChatSession:
             stream=True,
             stream_callback=_stream_cb,
             thought_callback=_thought_cb,
-            confirm_dangerous=confirm_callback is not None,
-            confirm_callback=confirm_callback,
+            permission_mode=permission_mode,
+            permission_callback=permission_callback,
         )
         self.agent = Agent(backend, registry, agent_cfg)
         self._shared_history = ConversationHistory(
