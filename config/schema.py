@@ -59,7 +59,7 @@ class ToolsConfig:
 
 @dataclass
 class ContextConfig:
-    repo_map_budget: int = 8_000
+    repo_map_budget: int = 10_000
     history_window: int = 20
 
 
@@ -151,7 +151,7 @@ def _parse(data: dict[str, Any]) -> AppConfig:
     )
 
     context = ContextConfig(
-        repo_map_budget=int(context_raw.get("repo_map_budget", 8_000)),
+        repo_map_budget=int(context_raw.get("repo_map_budget", 10_000)),
         history_window=int(context_raw.get("history_window", 20)),
     )
 

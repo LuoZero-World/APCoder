@@ -144,6 +144,7 @@ def create_agent(config_path: str | None):
     agent_config = AgentConfig(
         max_steps=config.agent.max_steps,
         budget_tokens=config.agent.budget_tokens,
+        repo_map_budget=config.context.repo_map_budget,
     )
     return Agent(backend, registry, agent_config), config
 

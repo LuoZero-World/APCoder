@@ -16,6 +16,9 @@ System prompt 模板管理。
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 from llm.base import LLMToolSchema
 
 
@@ -41,20 +44,21 @@ explore the repository, make the necessary code changes, and verify they work co
 - Use the OpenAI function-calling format for tool calls; do not write textual `Action:` / `Params:` blocks unless function calling is unavailable.
 - Make the smallest change necessary to solve the problem.
 - After editing files, run tests to verify the change.
+- Do not repeat the same tool call with the same arguments if it did not help. 
 - If tests fail, read the error carefully and fix the root cause.
 - If repeated attempts fail, reflect on the current approach and try a different strategy.
 - If the task cannot be solved, return a final answer explaining why, without calling any tool.
 
 
-## Repository
-Path: {repo_path}
-{repo_summary}
+{workspace_context}
 
 ## Available tools
 {tool_descriptions}
 """
 
 _NO_REPO_SUMMARY = "(Repository summary not yet available — use find_files and file_read to explore)"
+_DOC_NAMES = ("AGENTS.md", "README.md", "pyproject.toml", "package.json")
+_PROJECT_DOC_SNIPPET_CHARS = 1200
 
 
 def build_system_prompt(
@@ -68,17 +72,16 @@ def build_system_prompt(
     Args:
         repo_path:    repo 根目录路径
         tools:        已注册工具的 schema 列表
-        repo_summary: repo-map 生成的摘要（Day 5 接入，当前传 None）
+        repo_summary: repo-map 生成的摘要
 
     Returns:
         渲染好的 system prompt 字符串
     """
     tool_descriptions = _format_tool_descriptions(tools)
-    summary = repo_summary or _NO_REPO_SUMMARY
+    workspace_context = _build_workspace_context(repo_path, repo_summary)
 
     return _SYSTEM_TEMPLATE.format(
-        repo_path=repo_path,
-        repo_summary=summary,
+        workspace_context=workspace_context,
         tool_descriptions=tool_descriptions,
     )
 
@@ -90,7 +93,96 @@ def _format_tool_descriptions(tools: list[LLMToolSchema]) -> str:
     lines = []
     for tool in tools:
         lines.append(f"- **{tool.name}**: {tool.description}")
+        lines.append(f"  Parameters: {_format_parameter_summary(tool.parameters)}")
     return "\n".join(lines)
+
+
+def _format_parameter_summary(parameters: dict) -> str:
+    """Format a compact summary from a JSON Schema object."""
+    properties = parameters.get("properties", {}) if isinstance(parameters, dict) else {}
+    if not properties:
+        return "none"
+
+    required = set(parameters.get("required", []))
+    parts = []
+    for name, schema in properties.items():
+        if not isinstance(schema, dict):
+            kind = "unknown"
+        else:
+            kind = schema.get("type") or "unknown"
+            if isinstance(kind, list):
+                kind = "|".join(str(item) for item in kind)
+        marker = "required" if name in required else "optional"
+        parts.append(f"{name}: {kind} ({marker})")
+    return ", ".join(parts)
+
+
+def _build_workspace_context(repo_path: str, repo_summary: str | None) -> str:
+    """Build the workspace block injected into the system prompt."""
+    current_path = str(repo_path)
+    repo_root = _git_output(repo_path, ["rev-parse", "--show-toplevel"])
+    status = _git_output(repo_path, ["status", "--short"])
+    docs_root = Path(repo_root) if repo_root and Path(repo_root).exists() else Path(repo_path)
+    docs = _format_project_docs(docs_root)
+    summary = repo_summary or _NO_REPO_SUMMARY
+
+    return (
+        "## Workspace\n"
+        f"current_path: {current_path}\n"
+        f"repo_root: {repo_root or '(unknown)'}\n\n"
+        "git status:\n"
+        f"{status or 'clean'}\n\n"
+        "project docs:\n"
+        f"{docs}\n\n"
+        "repo map:\n"
+        f"{summary}"
+    )
+
+
+def _git_output(repo_path: str, args: list[str]) -> str:
+    """Run a git command in repo_path and return stdout, or an empty fallback."""
+    cwd = Path(repo_path)
+    if cwd.is_file():
+        cwd = cwd.parent
+    if not cwd.exists():
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        )
+    except Exception:
+        return ""
+    return result.stdout.strip()
+
+
+def _format_project_docs(root: Path) -> str:
+    """Read a short snippet from well-known project docs."""
+    if not root.exists():
+        return "(none)"
+
+    lines: list[str] = []
+    for name in _DOC_NAMES:
+        path = root / name
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        lines.append(f"- {name}:\n{_clip_text(text, _PROJECT_DOC_SNIPPET_CHARS)}")
+    return "\n".join(lines) if lines else "(none)"
+
+
+def _clip_text(text: str, limit: int) -> str:
+    text = str(text).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n...[truncated {len(text) - limit} chars]"
 
 
 # ---------------------------------------------------------------------------

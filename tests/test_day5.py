@@ -77,6 +77,27 @@ class TestRepoMap:
         assert isinstance(result, str)
         assert len(result) > 0
 
+    def test_build_end_to_end_prints_result_for_single_python_file(self, tmp_path):
+        source = (
+            "class Greeter:\n"
+            "    def greet(self, name):\n"
+            "        return f'Hello, {name}'\n"
+            "\n"
+            "def make_greeting(name):\n"
+            "    return Greeter().greet(name)\n"
+        )
+        (tmp_path / "sample.py").write_text(source, encoding="utf-8")
+
+        rm = RepoMap(tmp_path)
+        result = rm.build(budget=10_000)
+
+        print("\nInput case:\n" + source)
+        print("RepoMap build() result:\n" + result)
+        assert "sample.py" in result
+        assert "Greeter" in result
+        assert "greet" in result
+        assert "make_greeting" in result
+
     def test_contains_file_names(self, py_repo):
         rm = RepoMap(py_repo)
         result = rm.build(budget=10_000)
@@ -361,6 +382,59 @@ class TestCoreWithContext:
             result = agent.run(task, log)
 
         assert result.is_success()
+
+    def test_build_messages_uses_sliding_window_history_without_token_trim(self, tmp_path):
+        from agent.core import Agent, AgentConfig
+        from context.history import ConversationHistory
+        from context.repo_map import RepoMap
+
+        history = ConversationHistory(max_messages=3)
+        history.add(LLMMessage(role="user", content="task"))
+        history.add(LLMMessage(role="assistant", content="old"))
+        history.add(LLMMessage(role="user", content="recent"))
+
+        backend = MockBackend([])
+        registry = ToolRegistry().register(NoopTool("shell"))
+        agent = Agent(backend, registry, AgentConfig(history_max_messages=3))
+        agent._current_repo_path = str(tmp_path)
+
+        class NoTrimBudget(TokenBudget):
+            def trim_history(self, messages, token_limit):
+                raise AssertionError("token history trimming should not be called")
+
+        messages = agent._build_messages(history, NoTrimBudget(), RepoMap(tmp_path))
+
+        assert [m.content for m in messages[1:]] == ["task", "old", "recent"]
+
+    def test_repo_map_budget_uses_config_as_hard_cap(self, tmp_path):
+        from agent.core import Agent, AgentConfig
+        from context.history import ConversationHistory
+        from context.repo_map import RepoMap
+
+        class CapturingRepoMap(RepoMap):
+            def __init__(self, repo_path):
+                super().__init__(repo_path)
+                self.seen_budget = None
+
+            def build(self, budget=8000):
+                self.seen_budget = budget
+                return "captured repo map"
+
+        history = ConversationHistory(max_messages=3)
+        history.add(LLMMessage(role="user", content="task"))
+        backend = MockBackend([])
+        registry = ToolRegistry().register(NoopTool("shell"))
+        agent = Agent(
+            backend,
+            registry,
+            AgentConfig(budget_tokens=80_000, repo_map_budget=1234),
+        )
+        agent._current_repo_path = str(tmp_path)
+        repo_map = CapturingRepoMap(tmp_path)
+
+        agent._build_messages(history, TokenBudget(total=80_000), repo_map)
+
+        assert repo_map.seen_budget == 1234
 
     def test_repo_map_injected_in_system_prompt(self, tmp_path):
         """repo_map 生成的内容应出现在发给 LLM 的 system prompt 里。"""

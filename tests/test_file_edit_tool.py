@@ -30,6 +30,20 @@ def hello():
     assert edits[0].replace == 'def hello():\n    return "new"\n'
 
 
+def test_parse_strips_path_label_from_path_line():
+    text = """path: src/app.py
+<<<<<<< SEARCH
+old
+=======
+new
+>>>>>>> REPLACE
+"""
+
+    edits = parse_search_replace_blocks(text)
+
+    assert edits[0].path == "src/app.py"
+
+
 def test_parse_missing_separator_fails():
     text = """src/app.py
 <<<<<<< SEARCH
@@ -169,6 +183,15 @@ value = 2
     assert apply_result.success
     assert "Apply succeeded" in apply_result.output
     assert target.read_text(encoding="utf-8") == "value = 2\n"
+
+
+def test_file_edit_schema_explains_raw_path_line():
+    schema = FileEditTool().parameters_schema
+    description = schema["properties"]["edits_text"]["description"]
+
+    assert "raw file path only" in description
+    assert "do not prefix it with 'path:'" in description
+    assert "python_programs/bucketsort.py" in description
 
 
 def test_path_policy_hook_can_reject_paths(tmp_path):

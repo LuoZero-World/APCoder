@@ -91,7 +91,7 @@ def parse_search_replace_blocks(text: str) -> list[SearchReplaceEdit]:
         if i == 0:
             raise FileEditError("Parse failed: SEARCH marker has no path line before it.")
 
-        path = _line_text(lines[i - 1]).strip()
+        path = _normalize_edit_path_line(_line_text(lines[i - 1]).strip())
         if not path:
             raise FileEditError("Parse failed: empty path before SEARCH marker.")
         if _looks_like_marker(path):
@@ -288,9 +288,11 @@ class FileEditTool(BaseTool):
                 "edits_text": {
                     "type": "string",
                     "description": (
-                        "One or more Search/Replace Blocks: path, "
-                        "<<<<<<< SEARCH, old code, =======, new code, "
-                        ">>>>>>> REPLACE."
+                        "One or more Search/Replace Blocks. The line immediately "
+                        "before <<<<<<< SEARCH must be the raw file path only, "
+                        "for example python_programs/bucketsort.py; do not prefix "
+                        "it with 'path:'. Format: file.py, <<<<<<< SEARCH, old "
+                        "code, =======, new code, >>>>>>> REPLACE."
                     ),
                 },
                 "dry_run": {
@@ -340,6 +342,14 @@ def _find_marker(lines: list[str], marker: str, start: int) -> int | None:
 
 def _line_text(line: str) -> str:
     return line.rstrip("\r\n")
+
+
+def _normalize_edit_path_line(path: str) -> str:
+    """Accept the common model slip of writing 'path: file.py'."""
+    stripped = path.strip()
+    if stripped.lower().startswith("path:"):
+        return stripped[len("path:"):].strip()
+    return stripped
 
 
 def _looks_like_marker(text: str) -> bool:

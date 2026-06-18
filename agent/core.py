@@ -55,6 +55,7 @@ class AgentConfig:
     loop_detection_window: int = 3       # 连续 N 步完全相同 action 判定死循环
     test_tool_names: tuple[str, ...] = ("test", "pytest")  # 触发 Reflection 的工具名
     budget_tokens: int = 80_000            # 总 token 预算
+    repo_map_budget: int = 10_000          # repo-map token 硬上限
     history_max_messages: int = 40         # 历史最大条数
     llm_max_retries: int = 3               # LLM 调用失败最大重试次数
     llm_retry_delay: float = 2.0           # 重试间隔（秒，指数退避）
@@ -292,8 +293,12 @@ class Agent:
 
         # 生成 repo-map（带缓存：只在第一步生成，之后复用）
         if not hasattr(self, "_repo_map_cache"):
+            repo_map_budget = min(
+                token_budget.default_plan().repo_map,
+                max(0, self._cfg.repo_map_budget),
+            )
             self._repo_map_cache = repo_map.build(
-                budget=token_budget.default_plan().repo_map
+                budget=repo_map_budget
             )
 
         system_content = build_system_prompt(
@@ -303,12 +308,9 @@ class Agent:
         )
 
         # 裁剪历史
-        trimmed_history_dicts = token_budget.trim_history(
-            history.to_dicts(),
-            token_budget.default_plan().history,
-        )
+        trimmed_history_dicts = history.to_dicts()
 
-        # 组装：system + 裁剪后的 history
+        # 组装：system + history
         messages = [LLMMessage(role="system", content=system_content)]
         for d in trimmed_history_dicts:
             messages.append(LLMMessage(role=d["role"], content=d["content"]))

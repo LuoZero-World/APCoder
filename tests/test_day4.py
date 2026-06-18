@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent import prompt as prompt_module
 from agent.prompt import (
     build_system_prompt,
     build_task_prompt,
@@ -67,6 +68,11 @@ class TestBuildSystemPrompt:
         assert "shell" in prompt
         assert "file_read" in prompt
 
+    def test_tool_descriptions_include_parameter_summary(self):
+        prompt = build_system_prompt(".", [make_tool_schema("shell")])
+        assert "Parameters:" in prompt
+        assert "cmd: string (required)" in prompt
+
     def test_no_tools_placeholder(self):
         prompt = build_system_prompt(".", [])
         assert "no tools" in prompt.lower()
@@ -74,6 +80,35 @@ class TestBuildSystemPrompt:
     def test_repo_summary_injected(self):
         prompt = build_system_prompt(".", [], repo_summary="MyProject: 42 files")
         assert "MyProject: 42 files" in prompt
+
+    def test_workspace_context_includes_git_docs_and_repo_map(self, tmp_path, monkeypatch):
+        (tmp_path / "README.md").write_text("Project README", encoding="utf-8")
+
+        def fake_git_output(repo_path, args):
+            if args == ["rev-parse", "--show-toplevel"]:
+                return str(tmp_path)
+            if args == ["status", "--short"]:
+                return " M agent/prompt.py"
+            return ""
+
+        monkeypatch.setattr(prompt_module, "_git_output", fake_git_output)
+
+        prompt = build_system_prompt(
+            str(tmp_path),
+            [],
+            repo_summary="sample.py (1 symbol)",
+        )
+
+        assert "## Workspace" in prompt
+        assert f"current_path: {tmp_path}" in prompt
+        assert f"repo_root: {tmp_path}" in prompt
+        assert "git status:" in prompt
+        assert " M agent/prompt.py" in prompt
+        assert "Project docs:" in prompt
+        assert "README.md" in prompt
+        assert "Project README" in prompt
+        assert "Repo map:" in prompt
+        assert "sample.py (1 symbol)" in prompt
 
     def test_no_summary_fallback(self):
         prompt = build_system_prompt(".", [])

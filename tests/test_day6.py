@@ -65,8 +65,9 @@ class TestParseConfig:
         assert config.tools.shell.timeout == 60
 
     def test_context_section(self):
-        config = _parse({"context": {"history_window": 10}})
+        config = _parse({"context": {"history_window": 10, "repo_map_budget": 1234}})
         assert config.context.history_window == 10
+        assert config.context.repo_map_budget == 1234
 
     def test_partial_section_uses_defaults(self):
         config = _parse({"llm": {"provider": "openai"}})

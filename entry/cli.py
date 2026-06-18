@@ -277,6 +277,7 @@ def run(
     agent_config = AgentConfig(
         max_steps=config.agent.max_steps,
         budget_tokens=config.agent.budget_tokens,
+        repo_map_budget=config.context.repo_map_budget,
         history_max_messages=config.context.history_window * 2,
         stream=stream,
         stream_callback=_stream_cb if stream else None,
