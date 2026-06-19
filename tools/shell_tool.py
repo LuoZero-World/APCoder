@@ -15,9 +15,6 @@ from tools.base import BaseTool, ToolResult
 from tools.runtime import LocalRuntime, Runtime
 
 
-MAX_OUTPUT_CHARS = 8_000
-
-
 class ShellTool(BaseTool):
     """
     执行 shell 命令并返回 stdout + stderr。
@@ -31,8 +28,10 @@ class ShellTool(BaseTool):
     def __init__(
         self,
         runtime: Runtime | None = None,
+        max_output_chars: int = 2_000,
     ) -> None:
         self._runtime = runtime or LocalRuntime()
+        self._max_output_chars = int(max_output_chars)
 
     @property
     def name(self) -> str:
@@ -78,7 +77,7 @@ class ShellTool(BaseTool):
             return ToolResult(success=False, output="", error="cmd is required")
 
         result = self._runtime.exec(cmd, cwd=cwd, timeout=timeout)
-        output = _truncate(result.output, MAX_OUTPUT_CHARS)
+        output = _truncate(result.output, self._max_output_chars)
 
         if result.success:
             return ToolResult(success=True, output=output)

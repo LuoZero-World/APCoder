@@ -225,6 +225,7 @@ class ChatSession:
             budget_tokens=config.agent.budget_tokens,
             repo_map_budget=config.context.repo_map_budget,
             history_max_messages=config.context.history_window * 2,
+            history_token_budget_enabled=config.context.history_token_budget_enabled,
             llm_max_retries=3,
             llm_retry_delay=1.0,
             stream=True,

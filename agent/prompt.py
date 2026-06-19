@@ -39,15 +39,12 @@ explore the repository, make the necessary code changes, and verify they work co
 
 ## Rules
 
-- Think step by step before acting.
-- Use exactly one tool call per step, then wait for the observation before deciding the next step.
-- Use the OpenAI function-calling format for tool calls; do not write textual `Action:` / `Params:` blocks unless function calling is unavailable.
-- Make the smallest change necessary to solve the problem.
-- After editing files, run tests to verify the change.
-- Do not repeat the same tool call with the same arguments if it did not help. 
-- If tests fail, read the error carefully and fix the root cause.
-- If repeated attempts fail, reflect on the current approach and try a different strategy.
-- If the task cannot be solved, return a final answer explaining why, without calling any tool.
+- Think step by step, but keep responses brief: prefer tool calls over long explanations.
+- Use exactly one tool call per step, then wait for the observation before deciding next.
+- Use OpenAI function-calling for tools; do not write textual `Action:` / `Params:` blocks unless function calling is unavailable.
+- Make the smallest useful change, then run focused tests after editing.
+- Do not repeat unhelpful tool calls; if tests fail, read the error and fix the root cause.
+- If repeated attempts fail, change strategy; if the task cannot be solved, finish with a concise explanation and no tool call.
 
 
 {workspace_context}
@@ -132,9 +129,9 @@ def _build_workspace_context(repo_path: str, repo_summary: str | None) -> str:
         f"repo_root: {repo_root or '(unknown)'}\n\n"
         "git status:\n"
         f"{status or 'clean'}\n\n"
-        "project docs:\n"
+        "Project docs:\n"
         f"{docs}\n\n"
-        "repo map:\n"
+        "Repo map:\n"
         f"{summary}"
     )
 

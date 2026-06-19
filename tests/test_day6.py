@@ -61,13 +61,26 @@ class TestParseConfig:
         assert config.agent.budget_tokens == 40000
 
     def test_tools_section(self):
-        config = _parse({"tools": {"shell": {"timeout": 60}}})
+        config = _parse({"tools": {"shell": {"timeout": 60, "max_output_tokens": 321}}})
         assert config.tools.shell.timeout == 60
+        assert config.tools.shell.max_output_tokens == 321
 
     def test_context_section(self):
-        config = _parse({"context": {"history_window": 10, "repo_map_budget": 1234}})
+        config = _parse({
+            "context": {
+                "history_window": 10,
+                "repo_map_budget": 1234,
+                "history_token_budget_enabled": True,
+            }
+        })
         assert config.context.history_window == 10
         assert config.context.repo_map_budget == 1234
+        assert config.context.history_token_budget_enabled is True
+
+    def test_file_tool_limits(self):
+        config = _parse({"tools": {"file": {"max_read_lines": 12, "max_view_lines": 7}}})
+        assert config.tools.file.max_read_lines == 12
+        assert config.tools.file.max_view_lines == 7
 
     def test_partial_section_uses_defaults(self):
         config = _parse({"llm": {"provider": "openai"}})
@@ -77,6 +90,40 @@ class TestParseConfig:
     def test_base_url_none_becomes_empty(self):
         config = _parse({"llm": {"base_url": None}})
         assert config.llm.base_url == ""
+
+
+class TestToolConfigWiring:
+    def test_build_registry_applies_tool_output_limits(self, tmp_path):
+        from config.schema import AppConfig
+        from entry.cli import _build_registry
+        from tools.runtime import RunResult
+
+        class FakeRuntime:
+            def exec(self, cmd, cwd=None, timeout=30):
+                return RunResult(returncode=0, stdout="abcdefghij", stderr="")
+
+        config = AppConfig()
+        config.tools.shell.max_output_tokens = 6
+        config.tools.file.max_read_lines = 3
+        config.tools.file.max_view_lines = 2
+
+        target = tmp_path / "sample.txt"
+        target.write_text("one\ntwo\nthree\nfour\nfive\n", encoding="utf-8")
+
+        registry = _build_registry(config, runtime=FakeRuntime(), repo_path=tmp_path)
+
+        shell_result = registry.execute_tool("shell", {"cmd": "ignored"})
+        assert "truncated" in shell_result.output
+
+        read_result = registry.execute_tool("file_read", {"path": str(target)})
+        assert "3 |" in read_result.output
+        assert "4 |" not in read_result.output
+        assert "2 more lines not shown" in read_result.output
+
+        view_result = registry.execute_tool("file_view", {"path": str(target), "start_line": 2})
+        assert "2 |" in view_result.output
+        assert "3 |" in view_result.output
+        assert "4 |" not in view_result.output
 
 
 class TestLoadConfig:

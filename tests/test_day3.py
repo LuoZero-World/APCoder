@@ -34,7 +34,7 @@ def sample_file(tmp_path) -> Path:
 
 @pytest.fixture
 def large_file(tmp_path) -> Path:
-    """超过 MAX_READ_LINES 行的大文件。"""
+    """超过默认 file_read 最大行数的大文件。"""
     f = tmp_path / "large.py"
     f.write_text("\n".join(f"x = {i}" for i in range(600)))
     return f

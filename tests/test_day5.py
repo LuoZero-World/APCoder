@@ -210,8 +210,10 @@ class TestTokenBudget:
         budget = TokenBudget(total=80_000)
         plan = budget.default_plan()
         assert plan.total == 80_000
-        assert plan.reserve > 0
-        assert plan.system_core + plan.repo_map + plan.history + plan.observation <= plan.available
+        assert plan.reserve == int(80_000 * 0.15)
+        assert plan.repo_map == int(plan.available * 0.15)
+        assert plan.history == int(plan.available * 0.75)
+        assert plan.repo_map + plan.history <= plan.available
 
     def test_trim_to_short_text_unchanged(self):
         budget = TokenBudget()
@@ -267,6 +269,78 @@ class TestTokenBudget:
     def test_trim_history_empty(self):
         budget = TokenBudget()
         assert budget.trim_history([], token_limit=1000) == []
+
+    def test_trim_history_caps_observations_to_sixty_percent(self):
+        budget = TokenBudget()
+        token_limit = 80
+        latest_observation = "[Tool: shell | SUCCESS]\nlatest\n" + ("x" * 1000)
+        older_observation = "[Tool: shell | SUCCESS]\nolder\n" + ("y" * 1000)
+        msgs = [
+            {"role": "user", "content": "task"},
+            {"role": "user", "content": older_observation},
+            {"role": "assistant", "content": "normal dialogue " + ("z" * 120)},
+            {"role": "user", "content": latest_observation},
+        ]
+
+        result = budget.trim_history(msgs, token_limit=token_limit)
+
+        observation_tokens = sum(
+            estimate_tokens(m["content"])
+            for m in result
+            if m["content"].lstrip().startswith("[Tool:")
+        )
+        first_tokens = estimate_tokens(msgs[0]["content"])
+        assert observation_tokens <= int((token_limit - first_tokens) * 0.60)
+        assert any("[Tool: shell | SUCCESS]" in m["content"] for m in result)
+
+    def test_trim_history_keeps_action_observation_pair_together(self):
+        budget = TokenBudget()
+        action = {
+            "role": "assistant",
+            "content": 'Thought: inspect\nAction: shell\nParams: {"cmd": "pytest"}',
+        }
+        observation = {
+            "role": "user",
+            "content": "[Tool: shell | SUCCESS]\nshort output",
+        }
+        msgs = [
+            {"role": "user", "content": "task"},
+            {"role": "user", "content": "old " + ("x" * 500)},
+            action,
+            observation,
+        ]
+
+        result = budget.trim_history(msgs, token_limit=80)
+        contents = [m["content"] for m in result]
+        action_idx = next(i for i, c in enumerate(contents) if "Action: shell" in c)
+
+        assert contents[action_idx + 1].startswith("[Tool: shell | SUCCESS]")
+
+    def test_trim_history_replaces_large_observation_with_placeholder(self):
+        budget = TokenBudget()
+        action = {
+            "role": "assistant",
+            "content": 'Thought: run\nAction: shell\nParams: {"cmd": "cat big.log"}',
+        }
+        observation = {
+            "role": "user",
+            "content": "[Tool: shell | SUCCESS]\n" + ("large output\n" * 500),
+        }
+        msgs = [
+            {"role": "user", "content": "task"},
+            action,
+            observation,
+            {"role": "assistant", "content": "recent note"},
+        ]
+
+        result = budget.trim_history(msgs, token_limit=120)
+        contents = [m["content"] for m in result]
+        action_idx = next(i for i, c in enumerate(contents) if "Action: shell" in c)
+        compacted_observation = contents[action_idx + 1]
+
+        assert compacted_observation.startswith("[Tool: shell | SUCCESS]")
+        assert "Tool output omitted" in compacted_observation
+        assert "large output" not in compacted_observation
 
     def test_usage_report(self):
         budget = TokenBudget(total=10_000)
@@ -405,6 +479,38 @@ class TestCoreWithContext:
         messages = agent._build_messages(history, NoTrimBudget(), RepoMap(tmp_path))
 
         assert [m.content for m in messages[1:]] == ["task", "old", "recent"]
+
+    def test_build_messages_uses_history_token_budget_when_enabled(self, tmp_path):
+        from agent.core import Agent, AgentConfig
+        from context.history import ConversationHistory
+        from context.repo_map import RepoMap
+
+        history = ConversationHistory(max_messages=4)
+        history.add(LLMMessage(role="user", content="task"))
+        history.add(LLMMessage(role="assistant", content="old"))
+        history.add(LLMMessage(role="user", content="[Tool: shell | SUCCESS]\n" + "x" * 1000))
+
+        backend = MockBackend([])
+        registry = ToolRegistry().register(NoopTool("shell"))
+        agent = Agent(
+            backend,
+            registry,
+            AgentConfig(history_token_budget_enabled=True),
+        )
+        agent._current_repo_path = str(tmp_path)
+
+        class MarkingBudget(TokenBudget):
+            called = False
+
+            def trim_history(self, messages, token_limit):
+                self.called = True
+                return [{"role": "user", "content": "trimmed-history"}]
+
+        budget = MarkingBudget()
+        messages = agent._build_messages(history, budget, RepoMap(tmp_path))
+
+        assert budget.called
+        assert [m.content for m in messages[1:]] == ["trimmed-history"]
 
     def test_repo_map_budget_uses_config_as_hard_cap(self, tmp_path):
         from agent.core import Agent, AgentConfig

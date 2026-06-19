@@ -22,19 +22,16 @@ from typing import Any
 from tools.base import BaseTool, ToolResult
 
 
-# 单次 file_read 最多返回的行数，超出提示用 file_view
-MAX_READ_LINES = 500
-# file_view 每窗口显示的行数
-VIEW_WINDOW_LINES = 100
-
-
 class FileReadTool(BaseTool):
     """
-    读取文件内容。超过 MAX_READ_LINES 行时截断并提示。
+    读取文件内容。超过配置的最大行数时截断并提示。
 
     params:
         path (str): 文件路径（相对或绝对）
     """
+
+    def __init__(self, max_read_lines: int = 500) -> None:
+        self._max_read_lines = int(max_read_lines)
 
     @property
     def name(self) -> str:
@@ -44,7 +41,7 @@ class FileReadTool(BaseTool):
     def description(self) -> str:
         return (
             f"Read the contents of a file. "
-            f"Files longer than {MAX_READ_LINES} lines will be truncated; "
+            f"Files longer than {self._max_read_lines} lines will be truncated; "
             f"use file_view with line numbers to read specific sections."
         )
 
@@ -85,10 +82,10 @@ class FileReadTool(BaseTool):
         except OSError as e:
             return ToolResult(success=False, output="", error=str(e))
 
-        # 4. file_read 只返回前 MAX_READ_LINES 行，避免一次把上下文塞爆。
+        # 4. file_read 只返回前配置行数，避免一次把上下文塞爆。
         total = len(lines)
-        truncated = total > MAX_READ_LINES
-        display_lines = lines[:MAX_READ_LINES]
+        truncated = total > self._max_read_lines
+        display_lines = lines[:self._max_read_lines]
 
         # 加行号，方便 agent 用 file_view 定位
         numbered = "\n".join(
@@ -99,7 +96,7 @@ class FileReadTool(BaseTool):
         suffix = ""
         if truncated:
             suffix = (
-                f"\n... ({total - MAX_READ_LINES} more lines not shown) "
+                f"\n... ({total - self._max_read_lines} more lines not shown) "
                 f"Use file_view with start_line to read the rest."
             )
 
@@ -112,12 +109,15 @@ class FileReadTool(BaseTool):
 
 class FileViewTool(BaseTool):
     """
-    分窗口查看文件，每次返回 VIEW_WINDOW_LINES 行。
+    分窗口查看文件，每次返回配置的窗口行数。
 
     params:
         path (str):       文件路径
         start_line (int): 从第几行开始（1-indexed，默认 1）
     """
+
+    def __init__(self, window_lines: int = 100) -> None:
+        self._window_lines = int(window_lines)
 
     @property
     def name(self) -> str:
@@ -126,7 +126,7 @@ class FileViewTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            f"View a specific section of a file, {VIEW_WINDOW_LINES} lines at a time. "
+            f"View a specific section of a file, {self._window_lines} lines at a time. "
             f"Use start_line to scroll through large files. Lines are 1-indexed."
         )
 
@@ -159,7 +159,7 @@ class FileViewTool(BaseTool):
             return ToolResult(success=False, output="", error=f"Not a file: {path}")
 
         try:
-            # 3. 先完整读入，再按行切窗口；窗口大小由 VIEW_WINDOW_LINES 控制。
+            # 3. 先完整读入，再按行切窗口；窗口大小由配置控制。
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError as e:
             return ToolResult(success=False, output="", error=str(e))
@@ -174,7 +174,7 @@ class FileViewTool(BaseTool):
             )
 
         # 5. 计算当前窗口范围，并保留真实行号，便于下一轮继续定位。
-        end_line = min(start_line + VIEW_WINDOW_LINES - 1, total)
+        end_line = min(start_line + self._window_lines - 1, total)
         window = lines[start_line - 1 : end_line]
 
         numbered = "\n".join(

@@ -231,6 +231,7 @@ def run_on_issue(
         max_steps=config.agent.max_steps,
         budget_tokens=config.agent.budget_tokens,
         repo_map_budget=config.context.repo_map_budget,
+        history_token_budget_enabled=config.context.history_token_budget_enabled,
     )
     agent = Agent(backend, registry, agent_config)
 

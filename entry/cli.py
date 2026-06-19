@@ -74,9 +74,12 @@ def _build_registry(cfg, runtime=None, repo_path=None):
 
     return (
         ToolRegistry()
-        .register(ShellTool(runtime=runtime))
-        .register(FileReadTool())
-        .register(FileViewTool())
+        .register(ShellTool(
+            runtime=runtime,
+            max_output_chars=cfg.tools.shell.max_output_tokens,
+        ))
+        .register(FileReadTool(max_read_lines=cfg.tools.file.max_read_lines))
+        .register(FileViewTool(window_lines=cfg.tools.file.max_view_lines))
         .register(FileWriteTool())
         .register(FileEditTool(repo_root=repo_path or "."))
         .register(SearchTextTool())
@@ -279,6 +282,7 @@ def run(
         budget_tokens=config.agent.budget_tokens,
         repo_map_budget=config.context.repo_map_budget,
         history_max_messages=config.context.history_window * 2,
+        history_token_budget_enabled=config.context.history_token_budget_enabled,
         stream=stream,
         stream_callback=_stream_cb if stream else None,
         thought_callback=_thought_cb if stream else None,

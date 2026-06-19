@@ -26,6 +26,9 @@ from common import (  # noqa: E402
     run_pytest,
 )
 
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 
 TEMP_QUIXBUGS_ROOT = TEMP_DIR / "QuixBugs"
 
@@ -219,6 +222,7 @@ def _run_agent_worker(
             budget_tokens=config.agent.budget_tokens,
             repo_map_budget=config.context.repo_map_budget,
             history_max_messages=config.context.history_window * 2,
+            history_token_budget_enabled=config.context.history_token_budget_enabled,
             stream=True,
             stream_callback=lambda _text: None,
             thought_callback=lambda _text: None,
@@ -369,6 +373,7 @@ def evaluate_task(
             "passed": passed,
             "steps": steps,
             "failed_reason": failed_reason,
+            "agent_error": agent_result.get("error"),
             "duration_sec": agent_result.get("duration_sec", 0),
             "tokens": agent_result.get("tokens", empty_token_usage()),
             "changed_files": files_changed,
@@ -380,6 +385,7 @@ def evaluate_task(
             "passed": False,
             "steps": args.max_steps,
             "failed_reason": f"error: {type(exc).__name__}: {exc}",
+            "agent_error": agent_result.get("error"),
             "duration_sec": agent_result.get("duration_sec", 0),
             "tokens": agent_result.get("tokens", empty_token_usage()),
             "changed_files": [],

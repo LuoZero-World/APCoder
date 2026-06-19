@@ -30,7 +30,7 @@ class LLMConfig:
     model: str = "claude-sonnet-4-5"
     api_key: str = ""
     base_url: str = ""
-    max_tokens: int = 4096
+    max_tokens: int = 8192
 
 
 @dataclass
@@ -43,11 +43,12 @@ class AgentCfg:
 @dataclass
 class ShellToolConfig:
     timeout: int = 30
-    max_output_tokens: int = 8_000
+    max_output_tokens: int = 2_000
 
 
 @dataclass
 class FileToolConfig:
+    max_read_lines: int = 500
     max_view_lines: int = 100
 
 
@@ -61,6 +62,7 @@ class ToolsConfig:
 class ContextConfig:
     repo_map_budget: int = 10_000
     history_window: int = 20
+    history_token_budget_enabled: bool = False
 
 
 @dataclass
@@ -129,7 +131,7 @@ def _parse(data: dict[str, Any]) -> AppConfig:
         model=llm_raw.get("model", "claude-sonnet-4-5"),
         api_key=llm_raw.get("api_key", ""),
         base_url=llm_raw.get("base_url", "") or "",
-        max_tokens=int(llm_raw.get("max_tokens", 4096)),
+        max_tokens=int(llm_raw.get("max_tokens", 8192)),
     )
 
     agent = AgentCfg(
@@ -143,9 +145,10 @@ def _parse(data: dict[str, Any]) -> AppConfig:
     tools = ToolsConfig(
         shell=ShellToolConfig(
             timeout=int(shell_raw.get("timeout", 30)),
-            max_output_tokens=int(shell_raw.get("max_output_tokens", 8_000)),
+            max_output_tokens=int(shell_raw.get("max_output_tokens", 2_000)),
         ),
         file=FileToolConfig(
+            max_read_lines=int(file_raw.get("max_read_lines", 500)),
             max_view_lines=int(file_raw.get("max_view_lines", 100)),
         ),
     )
@@ -153,6 +156,9 @@ def _parse(data: dict[str, Any]) -> AppConfig:
     context = ContextConfig(
         repo_map_budget=int(context_raw.get("repo_map_budget", 10_000)),
         history_window=int(context_raw.get("history_window", 20)),
+        history_token_budget_enabled=bool(
+            context_raw.get("history_token_budget_enabled", False)
+        ),
     )
 
     return AppConfig(llm=llm, agent=agent, tools=tools, context=context)

@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 @dataclass
-class AgentConfig:
+class _LegacyAgentConfig:
     """Agent 运行时配置，从 config/default.yaml 加载后传入。"""
     max_steps: int = 40
     reflection_no_edit_steps: int = 6   # 连续 N 步无文件写操作触发 Reflection
@@ -71,6 +71,28 @@ class AgentConfig:
 # ---------------------------------------------------------------------------
 # Agent
 # ---------------------------------------------------------------------------
+
+@dataclass
+class AgentConfig:
+    """Runtime configuration for Agent."""
+
+    max_steps: int = 40
+    reflection_no_edit_steps: int = 6
+    loop_detection_window: int = 3
+    test_tool_names: tuple[str, ...] = ("test", "pytest")
+    budget_tokens: int = 80_000
+    repo_map_budget: int = 10_000
+    history_max_messages: int = 40
+    history_token_budget_enabled: bool = False
+    llm_max_retries: int = 3
+    llm_retry_delay: float = 2.0
+    stream: bool = False
+    stream_callback: object = None
+    thought_callback: object = None
+    permission_mode: str = "yolo"
+    permission_callback: object = None
+    permission_rules: object = None
+
 
 class Agent:
     """
@@ -309,6 +331,11 @@ class Agent:
 
         # 裁剪历史
         trimmed_history_dicts = history.to_dicts()
+        if self._cfg.history_token_budget_enabled:
+            trimmed_history_dicts = token_budget.trim_history(
+                trimmed_history_dicts,
+                token_budget.default_plan().history,
+            )
 
         # 组装：system + history
         messages = [LLMMessage(role="system", content=system_content)]
