@@ -38,3 +38,4 @@
 {"task_id": "to_base", "buggy_file": "python_programs/to_base.py", "test_file": "python_testcases/test_to_base.py"}
 {"task_id": "topological_ordering", "buggy_file": "python_programs/topological_ordering.py", "test_file": "python_testcases/test_topological_ordering.py"}
 {"task_id": "wrap", "buggy_file": "python_programs/wrap.py", "test_file": "python_testcases/test_wrap.py"}
+{"task_id": "busy_beaver", "buggy_file": "python_programs/busy_beaver.py", "test_file": "python_testcases/test_busy_beaver.py"}

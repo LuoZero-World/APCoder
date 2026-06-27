@@ -16,7 +16,7 @@ from tools.file_tool import FileReadTool, FileViewTool, FileWriteTool
 from tools.git_tool import GitAddTool, GitCommitTool, GitDiffTool, GitStatusTool
 from tools.search_tool import FindFilesTool, FindSymbolTool, SearchTextTool
 from tools.shell_tool import ShellTool, _truncate
-from tools.test_tool import PytestTool
+from tools.test_tool import MAX_OUTPUT_CHARS, PytestTool, _format_pytest_output
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +376,17 @@ class TestFindSymbolTool:
 class TestTestTool:
     tool = PytestTool()
 
+    def test_absolute_path_with_spaces(self, tmp_path):
+        repo = tmp_path / "repo with spaces"
+        tests = repo / "tests"
+        tests.mkdir(parents=True)
+        (tests / "test_pass.py").write_text("def test_ok():\n    assert True\n")
+
+        result = self.tool.execute({"path": str(tests), "cwd": str(repo)})
+
+        assert result.success
+        assert result.error is None
+
     def test_passing_tests(self, tmp_path):
         tests = tmp_path / "tests"
         tests.mkdir()
@@ -400,10 +411,53 @@ class TestTestTool:
         # 应该包含失败的测试名或断言错误信息
         assert "fail" in result.output.lower() or "assert" in result.output.lower()
 
+    def test_failure_output_contains_complete_short_traceback(self, tmp_path):
+        tests = tmp_path / "tests"
+        tests.mkdir()
+        (tests / "test_failure.py").write_text(
+            "def test_failure():\n"
+            "    assert False, 'exact diagnostic from the assertion'\n"
+        )
+
+        result = self.tool.execute({"path": str(tests), "cwd": str(tmp_path)})
+
+        assert not result.success
+        assert "FAILURES" in result.output
+        assert "AssertionError" in result.output
+        assert "exact diagnostic from the assertion" in result.output
+        assert "short test summary info" in result.output
+
+    def test_long_failure_output_keeps_head_and_tail_within_limit(self):
+        raw = "TRACEBACK-START\n" + ("failure detail\n" * 1000) + "SUMMARY-END"
+
+        output = _format_pytest_output(raw, success=False)
+
+        assert output.startswith("TRACEBACK-START")
+        assert output.endswith("SUMMARY-END")
+        assert "[pytest output truncated]" in output
+        assert len(output) <= MAX_OUTPUT_CHARS
+
     def test_nonexistent_path(self, tmp_path):
         result = self.tool.execute({"path": str(tmp_path / "no_tests")})
         # pytest 找不到测试文件会报 error，不应崩溃
         assert isinstance(result.success, bool)
+
+    def test_quoted_extra_args_are_kept_together(self, tmp_path):
+        tests = tmp_path / "tests"
+        tests.mkdir()
+        (tests / "test_filter.py").write_text(
+            "def test_selected_case(): assert True\n"
+            "def test_other_case(): assert True\n"
+        )
+
+        result = self.tool.execute({
+            "path": str(tests),
+            "args": '-k "selected_case and not other_case"',
+            "cwd": str(tmp_path),
+        })
+
+        assert result.success
+        assert "1 deselected" in result.output
 
     def test_extra_args_passed(self, tmp_path):
         tests = tmp_path / "tests"

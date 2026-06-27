@@ -14,4 +14,5 @@ https://github.com/muk610648-design/forge-agent/tree/main
 未来迭代方向：
 - 更完善的上下文压缩机制，降低长任务中的信息丢失风险。
 - 更稳定的记忆机制，让智能体能够持续沉淀任务经验与偏好。
+- 完整的 checkpoint / resume 能力
 - 多智能体协作能力，支持不同角色分工、并行处理与结果汇总。

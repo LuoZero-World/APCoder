@@ -4,14 +4,16 @@ tools/test_tool.py
 pytest 执行工具，返回结构化的测试结果。
 
 关键设计：
-- 不只返回原始 stdout，而是解析出"哪些测试失败了 + 错误信息"
-- 失败时 output 包含精简的 failure summary，避免把整个 traceback 塞进上下文
+- 成功时压缩为统计行，失败时保留 pytest 的完整 short traceback
+- 超长失败输出保留头尾并限制长度，兼顾诊断信息和上下文预算
 - 通过 exit code 判断成功/失败，不依赖字符串匹配
 """
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,7 @@ from tools.runtime import LocalRuntime, Runtime
 
 PYTEST_TIMEOUT = 20        # pytest 默认超时，比 shell 工具更长
 MAX_OUTPUT_CHARS = 6_000    # 测试输出比普通 shell 输出更容易很长
+TRUNCATION_MARKER = "\n...[pytest output truncated]...\n"
 
 
 class PytestTool(BaseTool):
@@ -44,7 +47,7 @@ class PytestTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Run pytest and return a structured summary of results. "
+            "Run pytest and return compact pass output or complete short failure tracebacks. "
             "Shows which tests failed and their error messages. "
             "Use path to run specific test files or directories."
         )
@@ -83,8 +86,16 @@ class PytestTool(BaseTool):
             else:
                 test_path = "."
 
-        # 2. 额外参数直接拼进 pytest 命令，用于 -x、-k、-v 等常见控制。
+        # 2. 按 shell 参数规则解析额外选项，保留 -k 等表达式中的空格。
         extra_args = params.get("args", "")
+        try:
+            extra_arg_parts = shlex.split(extra_args) if extra_args else []
+        except ValueError as exc:
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"invalid pytest args: {exc}",
+            )
 
         # 组装命令：--tb=short 足够 agent 理解，--no-header 减少噪音
         cmd_parts = [
@@ -94,11 +105,14 @@ class PytestTool(BaseTool):
             "--no-header",
             "-q",               # 安静模式：只输出失败详情和最终统计
         ]
-        if extra_args:
-            cmd_parts.extend(extra_args.split())
+        cmd_parts.extend(extra_arg_parts)
 
         # 3. 通过 runtime 执行 pytest；测试工具默认超时比通用 shell 更长。
-        cmd_str = " ".join(cmd_parts)
+        cmd_str = (
+            subprocess.list2cmdline(cmd_parts)
+            if os.name == "nt"
+            else shlex.join(cmd_parts)
+        )
         run_result = self._runtime.exec(cmd_str, cwd=cwd, timeout=PYTEST_TIMEOUT)
 
         # 4. 超时单独作为失败类型返回，方便 Agent 识别不是普通断言失败。
@@ -129,46 +143,28 @@ class PytestTool(BaseTool):
 # ---------------------------------------------------------------------------
 
 def _format_pytest_output(raw: str, success: bool) -> str:
-    """
-    把 pytest 原始输出格式化为 agent 友好的摘要。
-
-    成功时：返回通过统计行（如 "5 passed in 0.12s"）
-    失败时：提取 FAILED 测试列表 + 每个失败的 short traceback
-    """
-    if len(raw) > MAX_OUTPUT_CHARS:
-        # 失败时 agent 最需要看尾部（错误摘要），头部（收集信息）不重要
-        raw = "...[output truncated]...\n" + raw[-MAX_OUTPUT_CHARS:]
-
+    """Format pytest output for an agent without hiding failure diagnostics."""
     if success:
-        # 只返回最后的统计行
         lines = raw.strip().splitlines()
-        summary_lines = [l for l in lines if re.search(r"passed|no tests", l)]
+        summary_lines = [line for line in lines if re.search(r"passed|no tests", line)]
         if summary_lines:
             return summary_lines[-1]
         return raw.strip()
 
-    # 失败时：提取 FAILED 列表
-    failed_lines = [l for l in raw.splitlines() if l.startswith("FAILED")]
-    failed_section = "\n".join(failed_lines) if failed_lines else ""
+    # --tb=short already controls traceback detail. Preserve assertion expressions,
+    # exception types, and custom messages instead of parsing them away.
+    return _truncate_failed_output(raw.strip())
 
-    # 提取 short test summary info 之后的内容（pytest -q 会输出这块）
-    short_summary_match = re.search(
-        r"=+ short test summary info =+(.*?)(?:=+|\Z)",
-        raw,
-        re.DOTALL,
-    )
-    short_summary = short_summary_match.group(1).strip() if short_summary_match else ""
 
-    # 最终统计行（如 "2 failed, 3 passed in 0.45s"）
-    stat_match = re.search(r"\d+ (failed|error).*in \d+\.\d+s", raw)
-    stat_line = stat_match.group(0) if stat_match else ""
+def _truncate_failed_output(raw: str) -> str:
+    """Cap failed pytest output while preserving its beginning and summary tail."""
+    if len(raw) <= MAX_OUTPUT_CHARS:
+        return raw
 
-    parts = []
-    if failed_section:
-        parts.append(f"Failed tests:\n{failed_section}")
-    if short_summary and short_summary != failed_section:
-        parts.append(f"Summary:\n{short_summary}")
-    if stat_line:
-        parts.append(stat_line)
+    available = MAX_OUTPUT_CHARS - len(TRUNCATION_MARKER)
+    if available <= 0:
+        return TRUNCATION_MARKER[:MAX_OUTPUT_CHARS]
 
-    return "\n\n".join(parts) if parts else raw.strip()
+    head_chars = available // 2
+    tail_chars = available - head_chars
+    return raw[:head_chars] + TRUNCATION_MARKER + raw[-tail_chars:]
