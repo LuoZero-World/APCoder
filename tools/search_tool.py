@@ -7,13 +7,14 @@ tools/search_tool.py
 - find_symbol:   在 Python 文件中查找函数/类定义（不依赖 tree-sitter，用正则）
 
 设计说明：
-- 不依赖外部工具（grep 不一定存在），用 Python 原生实现
+- search_text/find_symbol 使用 Python 原生实现；find_files 依赖 Ripgrep
 - find_symbol 用正则匹配 def/class，Day 5 接入 tree-sitter 后可替换
 - 结果数量上限防止返回太多内容爆上下文
 """
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -24,7 +25,6 @@ from tools.base import BaseTool, ToolResult
 
 
 MAX_RESULTS = 50        # 单次搜索最多返回的结果数
-MAX_LINE_LENGTH = 200   # 单行超长时截断显示
 
 # 搜索时跳过的目录
 _SKIP_DIRS: frozenset[str] = frozenset({
@@ -48,15 +48,7 @@ _RG_HARD_EXCLUDE_GLOBS: tuple[str, ...] = (
 
 
 class SearchTextTool(BaseTool):
-    """
-    在 repo 文件中搜索文本，返回匹配行及其上下文。
-
-    params:
-        pattern (str):    搜索字符串（支持正则）
-        path (str):       搜索范围（文件或目录，默认当前目录）
-        file_pattern (str): 只搜索匹配的文件名（如 "*.py"，默认所有文件）
-        case_sensitive (bool): 是否区分大小写（默认 True）
-    """
+    """递归搜索文件内容，并返回适合 Agent 继续定位的结构化结果。"""
 
     @property
     def name(self) -> str:
@@ -65,9 +57,8 @@ class SearchTextTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Search for a text pattern (regex supported) in files. "
-            "Returns matching lines with file path and line number. "
-            f"Returns at most {MAX_RESULTS} matches."
+            "Search file contents with a regular expression. Returns structured "
+            "matches containing path, line, column, match span, and nearby context."
         )
 
     @property
@@ -77,81 +68,155 @@ class SearchTextTool(BaseTool):
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Text or regex pattern to search for",
+                    "description": "Non-empty Python regular expression",
                 },
                 "path": {
                     "type": "string",
-                    "description": "File or directory to search in (default: current directory)",
+                    "description": "File or directory to search recursively (default: current directory)",
+                },
+                "include_patterns": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "File globs to include (default: ['*'])",
+                },
+                "exclude_patterns": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "File globs to exclude",
                 },
                 "file_pattern": {
                     "type": "string",
-                    "description": "Glob pattern to filter files (e.g. '*.py'). Default: all files",
+                    "description": "Legacy single include glob; merged with include_patterns",
                 },
                 "case_sensitive": {
                     "type": "boolean",
                     "description": "Case-sensitive search (default true)",
+                },
+                "whole_word": {
+                    "type": "boolean",
+                    "description": "Require word boundaries around the entire pattern (default false)",
+                },
+                "context_before": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 20,
+                    "description": "Context lines before each match (default 2)",
+                },
+                "context_after": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 20,
+                    "description": "Context lines after each match (default 2)",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 200,
+                    "description": "Maximum matches to return (default 50)",
                 },
             },
             "required": ["pattern"],
         }
 
     def execute(self, params: dict[str, Any]) -> ToolResult:
-        # 1. 读取搜索条件：pattern 支持正则，path/file_pattern 控制搜索范围。
-        raw_pattern = params.get("pattern", "")
-        search_path = Path(params.get("path", "."))
-        file_pattern = params.get("file_pattern", "*")
-        case_sensitive = params.get("case_sensitive", True)
+        # 1. 校验正则、路径和布尔开关，避免隐式类型转换造成搜索偏差。
+        raw_pattern = params.get("pattern")
+        if not isinstance(raw_pattern, str) or not raw_pattern:
+            return _search_error("pattern must be a non-empty string")
 
-        # 2. 先编译正则；正则非法时直接返回工具错误，不进入文件遍历。
+        try:
+            search_path = Path(params.get("path", "."))
+        except TypeError:
+            return _search_error("path must be a string")
+        if not search_path.exists():
+            return _search_error(f"Path not found: {search_path}")
+
+        case_sensitive, error = _validate_bool_param(
+            params, "case_sensitive", True
+        )
+        if error:
+            return _search_error(error)
+        whole_word, error = _validate_bool_param(params, "whole_word", False)
+        if error:
+            return _search_error(error)
+
+        # 2. 校验上下文窗口和结果上限，给 Agent 输出设置明确边界。
+        context_before, error = _validate_int_param(
+            params, "context_before", default=2, minimum=0, maximum=20
+        )
+        if error:
+            return _search_error(error)
+        context_after, error = _validate_int_param(
+            params, "context_after", default=2, minimum=0, maximum=20
+        )
+        if error:
+            return _search_error(error)
+        max_results, error = _validate_int_param(
+            params, "max_results", default=MAX_RESULTS, minimum=1, maximum=200
+        )
+        if error:
+            return _search_error(error)
+
+        # 3. 合并新版 include_patterns 与旧 file_pattern，并校验 exclude。
+        includes, error = _collect_search_include_patterns(params)
+        if error:
+            return _search_error(error)
+        excludes, error = _validate_pattern_list(
+            params.get("exclude_patterns"), "exclude_patterns"
+        )
+        if error:
+            return _search_error(error)
+
+        # 4. whole_word 包裹整个表达式；非法正则在进入文件遍历前失败。
+        expression = rf"\b(?:{raw_pattern})\b" if whole_word else raw_pattern
         flags = 0 if case_sensitive else re.IGNORECASE
         try:
-            regex = re.compile(raw_pattern, flags)
-        except re.error as e:
-            return ToolResult(success=False, output="", error=f"Invalid regex: {e}")
+            regex = re.compile(expression, flags)
+        except re.error as exc:
+            return _search_error(f"Invalid regex: {exc}")
 
-        # 3. 搜索根路径不存在时返回失败，避免静默给出空结果。
-        if not search_path.exists():
-            return ToolResult(
-                success=False, output="", error=f"Path not found: {search_path}"
-            )
-
-        # 4. _iter_files 负责递归遍历和跳过无关目录，这里只消费候选文件。
-        matches: list[str] = []
-        files = _iter_files(search_path, file_pattern)
-
-        for filepath in files:
-            # 5. 达到结果上限立即停止，防止观察结果过长挤占上下文。
-            if len(matches) >= MAX_RESULTS:
-                break
+        # 5. 每个文件只读取一次；同一行的多个 occurrence 分别生成结果。
+        matches: list[dict[str, Any]] = []
+        for filepath in _iter_search_files(search_path, includes, excludes):
             try:
-                for lineno, line in enumerate(
-                    filepath.read_text(encoding="utf-8", errors="replace").splitlines(),
-                    start=1,
-                ):
-                    if regex.search(line):
-                        # 6. 单行也做长度截断；返回格式保持 grep 风格：path:line: text。
-                        display_line = line[:MAX_LINE_LENGTH]
-                        if len(line) > MAX_LINE_LENGTH:
-                            display_line += " ..."
-                        matches.append(f"{filepath}:{lineno}: {display_line}")
-                        if len(matches) >= MAX_RESULTS:
-                            break
+                lines = filepath.read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()
             except OSError:
-                # 7. 单个文件读失败不影响整体搜索，跳过即可。
                 continue
 
-        if not matches:
-            return ToolResult(
-                success=True,
-                output=f"No matches found for '{raw_pattern}'",
-            )
+            for line_index, line in enumerate(lines):
+                for match in regex.finditer(line):
+                    # 6. 多探测一个命中，用 truncated 明确告知 Agent 结果未完整返回。
+                    if len(matches) >= max_results:
+                        return ToolResult(
+                            success=True,
+                            output={"matches": matches, "truncated": True},
+                        )
 
-        suffix = f"\n[Showing {len(matches)} matches]"
-        if len(matches) == MAX_RESULTS:
-            suffix = f"\n[Showing first {MAX_RESULTS} matches, there may be more]"
+                    context_start = max(0, line_index - context_before)
+                    context_end = min(
+                        len(lines), line_index + context_after + 1
+                    )
+                    matches.append({
+                        "path": str(filepath),
+                        "line": line_index + 1,
+                        "column": match.start() + 1,
+                        "match_span": {
+                            "start": match.start(),
+                            "end": match.end(),
+                        },
+                        "context": {
+                            "start_line": context_start + 1,
+                            "lines": lines[context_start:context_end],
+                        },
+                    })
 
-        return ToolResult(success=True, output="\n".join(matches) + suffix)
-
+        # 7. 无匹配也返回稳定结构，不再生成自然语言提示。
+        return ToolResult(
+            success=True,
+            output={"matches": matches, "truncated": False},
+        )
 
 class FindFilesTool(BaseTool):
     """
@@ -409,6 +474,105 @@ class FindSymbolTool(BaseTool):
 # ---------------------------------------------------------------------------
 # 内部辅助
 # ---------------------------------------------------------------------------
+
+def _empty_search_output() -> dict[str, Any]:
+    """为成功空结果和失败结果创建互不共享的标准结构。"""
+    return {"matches": [], "truncated": False}
+
+
+def _search_error(message: str) -> ToolResult:
+    """统一构造 search_text 的结构化失败结果。"""
+    return ToolResult(
+        success=False,
+        output=_empty_search_output(),
+        error=message,
+    )
+
+
+def _validate_bool_param(
+    params: dict[str, Any],
+    name: str,
+    default: bool,
+) -> tuple[bool, str | None]:
+    """读取布尔参数，拒绝字符串等隐式真值。"""
+    value = params.get(name, default)
+    if not isinstance(value, bool):
+        return default, f"{name} must be a boolean"
+    return value, None
+
+
+def _validate_int_param(
+    params: dict[str, Any],
+    name: str,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> tuple[int, str | None]:
+    """读取有上下界的整数参数；bool 不作为整数接受。"""
+    value = params.get(name, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return default, f"{name} must be an integer"
+    if value < minimum or value > maximum:
+        return default, f"{name} must be between {minimum} and {maximum}"
+    return value, None
+
+
+def _collect_search_include_patterns(
+    params: dict[str, Any],
+) -> tuple[list[str], str | None]:
+    """合并 search_text 新版 include 数组与旧 file_pattern。"""
+    includes, error = _validate_pattern_list(
+        params.get("include_patterns"), "include_patterns"
+    )
+    if error:
+        return [], error
+
+    legacy_pattern = params.get("file_pattern")
+    if legacy_pattern is not None:
+        if not isinstance(legacy_pattern, str) or not legacy_pattern.strip():
+            return [], "file_pattern must be a non-empty string"
+        includes.insert(0, legacy_pattern.strip())
+
+    deduplicated = list(dict.fromkeys(includes))
+    return deduplicated or ["*"], None
+
+
+def _is_search_skip_dir(name: str) -> bool:
+    """判断搜索时应剪枝的依赖、缓存或构建目录。"""
+    return name in _SKIP_DIRS or name.endswith(".egg-info")
+
+
+def _iter_search_files(
+    root: Path,
+    include_patterns: list[str],
+    exclude_patterns: list[str],
+):
+    """流式遍历 search_text 候选文件，并应用 include/exclude glob。"""
+    def should_include(filepath: Path) -> bool:
+        if not _matches_include_glob(str(filepath), include_patterns):
+            return False
+        if exclude_patterns and _matches_include_glob(
+            str(filepath), exclude_patterns
+        ):
+            return False
+        return True
+
+    if root.is_file():
+        if should_include(root):
+            yield root
+        return
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        # 原地剪枝，避免继续进入依赖与缓存目录。
+        dirnames[:] = sorted(
+            dirname for dirname in dirnames
+            if not _is_search_skip_dir(dirname)
+        )
+        for filename in sorted(filenames):
+            filepath = Path(dirpath) / filename
+            if should_include(filepath):
+                yield filepath
+
 
 def _validate_pattern_list(
     value: Any,

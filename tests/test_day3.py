@@ -242,50 +242,209 @@ class TestShellTruncate:
 class TestSearchTextTool:
     tool = SearchTextTool()
 
-    def test_find_pattern_in_file(self, tmp_path):
-        f = tmp_path / "code.py"
-        f.write_text("def foo():\n    pass\ndef bar():\n    return 1\n")
-        result = self.tool.execute({"pattern": "def ", "path": str(tmp_path)})
-        assert result.success
-        assert "foo" in result.output
-        assert "bar" in result.output
+    def test_returns_structured_match_with_location_and_context(self, tmp_path):
+        target = tmp_path / "code.py"
+        target.write_text(
+            "# header\ndef foo():\n    pass\ndef bar():\n    return 1\n"
+        )
 
-    def test_no_matches(self, tmp_path):
+        result = self.tool.execute({
+            "pattern": "foo",
+            "path": str(tmp_path),
+            "context_before": 1,
+            "context_after": 1,
+        })
+
+        assert result.success
+        assert isinstance(result.output, dict)
+        assert result.output["truncated"] is False
+        match = result.output["matches"][0]
+        assert match == {
+            "path": str(target),
+            "line": 2,
+            "column": 5,
+            "match_span": {"start": 4, "end": 7},
+            "context": {
+                "start_line": 1,
+                "lines": ["# header", "def foo():", "    pass"],
+            },
+        }
+
+    def test_multiple_matches_on_same_line_are_separate(self, tmp_path):
+        (tmp_path / "f.py").write_text("foo foo\n")
+
+        result = self.tool.execute({
+            "pattern": "foo",
+            "path": str(tmp_path),
+            "context_before": 0,
+            "context_after": 0,
+        })
+
+        matches = result.output["matches"]
+        assert [match["column"] for match in matches] == [1, 5]
+        assert [match["match_span"] for match in matches] == [
+            {"start": 0, "end": 3},
+            {"start": 4, "end": 7},
+        ]
+
+    def test_no_matches_returns_empty_structure(self, tmp_path):
         (tmp_path / "f.py").write_text("hello world")
-        result = self.tool.execute({"pattern": "ZZZNOMATCH", "path": str(tmp_path)})
-        assert result.success
-        assert "No matches" in result.output
 
-    def test_file_pattern_filter(self, tmp_path):
+        result = self.tool.execute({
+            "pattern": "ZZZNOMATCH",
+            "path": str(tmp_path),
+        })
+
+        assert result.success
+        assert result.output == {"matches": [], "truncated": False}
+
+    def test_include_and_exclude_patterns_filter_files(self, tmp_path):
         (tmp_path / "code.py").write_text("target here")
         (tmp_path / "data.txt").write_text("target here")
+        generated = tmp_path / "generated"
+        generated.mkdir()
+        (generated / "skip.py").write_text("target here")
+
+        result = self.tool.execute({
+            "pattern": "target",
+            "path": str(tmp_path),
+            "include_patterns": ["*.py"],
+            "exclude_patterns": ["**/generated/**"],
+        })
+
+        assert [match["path"] for match in result.output["matches"]] == [
+            str(tmp_path / "code.py")
+        ]
+
+    def test_file_pattern_remains_compatible(self, tmp_path):
+        (tmp_path / "code.py").write_text("target here")
+        (tmp_path / "data.txt").write_text("target here")
+
         result = self.tool.execute({
             "pattern": "target",
             "path": str(tmp_path),
             "file_pattern": "*.py",
         })
-        assert "code.py" in result.output
-        assert "data.txt" not in result.output
+
+        assert [match["path"] for match in result.output["matches"]] == [
+            str(tmp_path / "code.py")
+        ]
 
     def test_case_insensitive(self, tmp_path):
         (tmp_path / "f.py").write_text("Hello World")
+
         result = self.tool.execute({
             "pattern": "hello",
             "path": str(tmp_path),
             "case_sensitive": False,
         })
-        assert "Hello World" in result.output
 
-    def test_invalid_regex(self, tmp_path):
-        result = self.tool.execute({"pattern": "[invalid", "path": str(tmp_path)})
+        assert len(result.output["matches"]) == 1
+        assert result.output["matches"][0]["match_span"] == {
+            "start": 0,
+            "end": 5,
+        }
+
+    def test_whole_word_excludes_substrings(self, tmp_path):
+        (tmp_path / "f.py").write_text("cat scatter cat")
+
+        result = self.tool.execute({
+            "pattern": "cat",
+            "path": str(tmp_path),
+            "whole_word": True,
+        })
+
+        assert [match["column"] for match in result.output["matches"]] == [1, 13]
+
+    def test_context_is_clamped_to_file_boundaries(self, tmp_path):
+        (tmp_path / "f.py").write_text("target\nsecond\n")
+
+        result = self.tool.execute({
+            "pattern": "target",
+            "path": str(tmp_path),
+            "context_before": 20,
+            "context_after": 20,
+        })
+
+        context = result.output["matches"][0]["context"]
+        assert context == {"start_line": 1, "lines": ["target", "second"]}
+
+    def test_max_results_sets_truncated_only_when_more_exist(self, tmp_path):
+        (tmp_path / "f.py").write_text("hit hit hit")
+
+        result = self.tool.execute({
+            "pattern": "hit",
+            "path": str(tmp_path),
+            "max_results": 2,
+        })
+
+        assert len(result.output["matches"]) == 2
+        assert result.output["truncated"] is True
+
+    def test_exact_max_results_is_not_truncated(self, tmp_path):
+        (tmp_path / "f.py").write_text("hit hit")
+
+        result = self.tool.execute({
+            "pattern": "hit",
+            "path": str(tmp_path),
+            "max_results": 2,
+        })
+
+        assert len(result.output["matches"]) == 2
+        assert result.output["truncated"] is False
+
+    def test_invalid_regex_returns_structured_error(self, tmp_path):
+        result = self.tool.execute({
+            "pattern": "[invalid",
+            "path": str(tmp_path),
+        })
+
         assert not result.success
+        assert result.output == {"matches": [], "truncated": False}
         assert "Invalid regex" in result.error
 
-    def test_includes_line_numbers(self, tmp_path):
-        (tmp_path / "f.py").write_text("line one\nline two\nline three\n")
-        result = self.tool.execute({"pattern": "two", "path": str(tmp_path)})
-        assert ":2:" in result.output
+    @pytest.mark.parametrize(
+        ("params", "error_text"),
+        [
+            ({"case_sensitive": "yes"}, "case_sensitive must be a boolean"),
+            ({"whole_word": 1}, "whole_word must be a boolean"),
+            ({"context_before": -1}, "context_before must be between"),
+            ({"context_after": 21}, "context_after must be between"),
+            ({"max_results": 0}, "max_results must be between"),
+            ({"max_results": True}, "max_results must be an integer"),
+            ({"include_patterns": "*.py"}, "include_patterns must be an array"),
+        ],
+    )
+    def test_invalid_parameters(self, tmp_path, params, error_text):
+        result = self.tool.execute({
+            "pattern": "target",
+            "path": str(tmp_path),
+            **params,
+        })
 
+        assert not result.success
+        assert error_text in result.error
+
+    def test_empty_pattern_is_rejected(self, tmp_path):
+        result = self.tool.execute({"pattern": "", "path": str(tmp_path)})
+
+        assert not result.success
+        assert "pattern must be a non-empty string" in result.error
+
+    def test_nonexistent_path_is_rejected(self, tmp_path):
+        result = self.tool.execute({
+            "pattern": "target",
+            "path": str(tmp_path / "missing"),
+        })
+
+        assert not result.success
+        assert "Path not found" in result.error
+
+    def test_schema_does_not_offer_files_or_count_modes(self):
+        properties = self.tool.parameters_schema["properties"]
+
+        assert "files" not in properties
+        assert "count" not in properties
 
 # ===========================================================================
 # FindFilesTool

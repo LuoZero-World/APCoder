@@ -146,7 +146,7 @@ class Observation:
     output 字段会被注入下一轮 LLM 的上下文。
     """
     status: ObservationStatus
-    output: str                         # 工具输出，已截断到安全长度
+    output: Any                         # 文本或原生结构化工具输出
     tool_name: str                      # 来自哪个工具
     tokens_used: int = 0                # 这条 observation 消耗的 token 数（估算）
     error: str | None = None            # status == ERROR 时的错误信息
@@ -158,10 +158,15 @@ class Observation:
         return self.status == ObservationStatus.SUCCESS
 
     def __repr__(self) -> str:
+        # 结构化输出同样支持 len；其他标量则退化为字符串长度。
+        try:
+            output_len = len(self.output)
+        except TypeError:
+            output_len = len(str(self.output))
         return (
             f"Observation(tool={self.tool_name}, "
             f"status={self.status.value}, "
-            f"len={len(self.output)})"
+            f"len={output_len})"
         )
 
 

@@ -358,7 +358,17 @@ class Agent:
         status = "SUCCESS" if observation.is_success() else "ERROR"
         lines = [f"[Tool: {observation.tool_name} | {status}]"]
         if observation.output:
-            lines.append(observation.output)
+            # 原生 dict/list 在上下文边界统一转成 JSON；字符串工具保持原行为。
+            if isinstance(observation.output, str):
+                lines.append(observation.output)
+            elif isinstance(observation.output, (dict, list)):
+                lines.append(json.dumps(
+                    observation.output,
+                    ensure_ascii=False,
+                    indent=2,
+                ))
+            else:
+                lines.append(str(observation.output))
         if observation.error and not observation.is_success():
             lines.append(f"Error: {observation.error}")
         return "\n".join(lines)

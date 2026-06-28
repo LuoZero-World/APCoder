@@ -33,7 +33,7 @@ class ToolResult:
     core.py 把它转换为 Observation 后写入 EventLog。
     """
     success: bool
-    output: str                         # 工具的文本输出，已做截断处理
+    output: Any                         # 文本或原生结构化输出
     error: str | None = None            # 失败时的错误信息
 
     def to_observation(self, tool_name: str) -> Observation:

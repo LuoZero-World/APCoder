@@ -15,11 +15,16 @@ tests/test_day2.py
 - ToolRegistry 基本功能
 """
 
+import json
+
 import pytest
 
 from agent.core import Agent, AgentConfig
 from agent.event_log import EventLog
-from agent.task import Action, ActionType, RunStatus, Task, ToolCall
+from agent.task import (
+    Action, ActionType, Observation, ObservationStatus,
+    RunStatus, Task, ToolCall,
+)
 from llm.base import MockBackend
 from tools.base import FailingTool, NoopTool, ToolRegistry
 
@@ -73,6 +78,24 @@ def make_finish_action(message="All done.") -> Action:
         thought="Task is complete.",
         message=message,
     )
+
+
+class TestStructuredObservationFormatting:
+    def test_native_output_is_serialized_at_history_boundary(self):
+        agent = make_agent(MockBackend([]))
+        output = {"matches": [{"path": "模块.py", "line": 3}], "truncated": False}
+        observation = Observation(
+            status=ObservationStatus.SUCCESS,
+            output=output,
+            tool_name="search_text",
+        )
+
+        formatted = agent._format_observation_for_history(observation)
+        header, payload = formatted.split("\n", 1)
+
+        assert header == "[Tool: search_text | SUCCESS]"
+        assert json.loads(payload) == output
+        assert "模块.py" in payload
 
 
 def make_give_up_action(message="Cannot solve.") -> Action:

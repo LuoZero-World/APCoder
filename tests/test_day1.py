@@ -188,6 +188,18 @@ class TestObservation:
         assert "success" in r
 
 
+    def test_structured_output_stays_native_and_json_serializable(self):
+        output = {"matches": [{"path": "code.py", "line": 2}], "truncated": False}
+        observation = Observation(
+            status=ObservationStatus.SUCCESS,
+            output=output,
+            tool_name="search_text",
+        )
+
+        assert observation.to_dict()["output"] == output
+        assert "len=2" in repr(observation)
+        json.dumps(observation.to_dict())
+
 # ---------------------------------------------------------------------------
 # RunResult
 # ---------------------------------------------------------------------------
@@ -267,6 +279,22 @@ class TestEventLogWriteAndReplay:
 
         types = [json.loads(l)["event_type"] for l in lines]
         assert types == ["task_start", "action", "observation"]
+
+    def test_structured_observation_written_as_native_json(
+        self, sample_task, tmp_log_dir
+    ):
+        output = {"matches": [{"path": "code.py", "line": 2}], "truncated": False}
+        observation = Observation(
+            status=ObservationStatus.SUCCESS,
+            output=output,
+            tool_name="search_text",
+        )
+        log = EventLog.create(sample_task, log_dir=str(tmp_log_dir))
+        log.log_observation(step=1, observation=observation)
+        log.close()
+
+        raw = json.loads(log.path.read_text().strip())
+        assert raw["payload"]["observation"]["output"] == output
 
     def test_replay_restores_all_events(
         self, sample_task, shell_action, success_observation, tmp_log_dir
