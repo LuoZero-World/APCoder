@@ -81,7 +81,10 @@ def make_finish_action(message="All done.") -> Action:
 
 
 class TestStructuredObservationFormatting:
-    def test_native_output_is_serialized_at_history_boundary(self):
+    def test_native_output_is_serialized_at_history_boundary(self, monkeypatch):
+        import agent.core as core_module
+
+        monkeypatch.delattr(core_module, "json", raising=False)
         agent = make_agent(MockBackend([]))
         output = {"matches": [{"path": "模块.py", "line": 3}], "truncated": False}
         observation = Observation(

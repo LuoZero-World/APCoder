@@ -2,8 +2,8 @@
 tools/search_tool.py
 
 代码搜索工具，三个 action：
-- search_text:   在文件内容中搜索字符串（grep 风格）
-- find_files:    按文件名 pattern 查找文件
+- search_text:   在文件内容中搜索字符串（grep ）
+- find_files:    按文件名 pattern 查找文件 （glob）
 - find_symbol:   在 Python 文件中查找函数/类定义（不依赖 tree-sitter，用正则）
 
 设计说明：

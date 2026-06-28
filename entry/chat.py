@@ -17,6 +17,7 @@ history 跨轮保留，像 Claude Code 一样可以持续对话。
 
 from __future__ import annotations
 
+import json
 import time
 import sys
 from pathlib import Path
@@ -43,6 +44,19 @@ def cyan(t: str) -> str:   return _c(t, "36")
 def bold(t: str) -> str:   return _c(t, "1")
 def dim(t: str) -> str:    return _c(t, "2")
 def magenta(t: str) -> str: return _c(t, "35")
+
+
+def _format_observation_output(output) -> str:
+    """把文本或原生结构化工具输出转换为聊天预览文本。"""
+    if output is None:
+        return ""
+    if isinstance(output, str):
+        return output.strip()
+    if isinstance(output, (dict, list)):
+        # 局部导入避免模块热重载后函数存在、全局名称尚未更新。
+        import json as _json
+        return _json.dumps(output, ensure_ascii=False, indent=2).strip()
+    return str(output).strip()
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +115,7 @@ def _print_event_live(event) -> None:
     elif etype == EventType.OBSERVATION:
         obs = p["observation"]
         status = obs.get("status", "")
-        output = (obs.get("output") or "").strip()
+        output = _format_observation_output(obs.get("output"))
         error = obs.get("error")
 
         # 从上一条 action event 取工具名（_last_tool_name 由 ACTION 分支设置）

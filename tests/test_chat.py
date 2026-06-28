@@ -170,6 +170,35 @@ class TestHistoryPersistence:
 # ---------------------------------------------------------------------------
 
 class TestChatEdgeCases:
+    def test_live_observation_supports_structured_output(self, capsys, monkeypatch):
+        from agent.task import Event, EventType
+        import entry.chat as chat_module
+        from entry.chat import _print_event_live
+
+        monkeypatch.delattr(chat_module, "json", raising=False)
+        _print_event_live._last_tool_name = "search_text"
+        event = Event(
+            event_type=EventType.OBSERVATION,
+            task_id="structured",
+            payload={
+                "step": 1,
+                "observation": {
+                    "status": "success",
+                    "output": {
+                        "matches": [{"path": "模块.py", "line": 3}],
+                        "truncated": False,
+                    },
+                    "error": None,
+                },
+            },
+        )
+
+        _print_event_live(event)
+
+        rendered = capsys.readouterr().out
+        assert '"matches"' in rendered
+        assert "模块.py" in rendered
+
     def test_agent_give_up_still_returns_true(self, tmp_path, cfg, registry):
         """give_up 不是 success，但也不应让 chat 崩溃。"""
         script = [Action(ActionType.GIVE_UP, "stuck", message="cannot solve")]

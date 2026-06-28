@@ -362,7 +362,9 @@ class Agent:
             if isinstance(observation.output, str):
                 lines.append(observation.output)
             elif isinstance(observation.output, (dict, list)):
-                lines.append(json.dumps(
+                # 局部导入保证长期进程热重载函数后也不会缺少模块全局名称。
+                import json as _json
+                lines.append(_json.dumps(
                     observation.output,
                     ensure_ascii=False,
                     indent=2,
