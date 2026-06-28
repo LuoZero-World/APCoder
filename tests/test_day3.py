@@ -321,6 +321,135 @@ class TestFindFilesTool:
         assert not result.success
 
 
+    def test_multiple_include_patterns_form_union(self, tmp_path):
+        (tmp_path / "code.py").write_text("")
+        (tmp_path / "web.ts").write_text("")
+        (tmp_path / "notes.txt").write_text("")
+
+        result = self.tool.execute({
+            "include_patterns": ["*.py", "*.ts"],
+            "path": str(tmp_path),
+        })
+
+        assert result.success
+        assert "code.py" in result.output
+        assert "web.ts" in result.output
+        assert "notes.txt" not in result.output
+
+    def test_pattern_and_include_patterns_are_merged(self, tmp_path):
+        (tmp_path / "code.py").write_text("")
+        (tmp_path / "web.ts").write_text("")
+
+        result = self.tool.execute({
+            "pattern": "*.py",
+            "include_patterns": ["*.py", "*.ts"],
+            "path": str(tmp_path),
+        })
+
+        assert result.success
+        assert "code.py" in result.output
+        assert "web.ts" in result.output
+
+    def test_exclude_patterns_remove_matches(self, tmp_path):
+        (tmp_path / "keep.py").write_text("")
+        generated = tmp_path / "generated"
+        generated.mkdir()
+        (generated / "skip.py").write_text("")
+
+        result = self.tool.execute({
+            "pattern": "*.py",
+            "exclude_patterns": ["**/generated/**"],
+            "path": str(tmp_path),
+        })
+
+        assert result.success
+        assert "keep.py" in result.output
+        assert "skip.py" not in result.output
+
+    def test_respects_gitignore_by_default(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitignore").write_text("ignored.py\n")
+        (tmp_path / "visible.py").write_text("")
+        (tmp_path / "ignored.py").write_text("")
+
+        result = self.tool.execute({"pattern": "*.py", "path": str(tmp_path)})
+
+        assert result.success
+        assert "visible.py" in result.output
+        assert "ignored.py" not in result.output
+
+    def test_include_ignored_overrides_gitignore(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".gitignore").write_text("ignored.py\n")
+        (tmp_path / "ignored.py").write_text("")
+
+        result = self.tool.execute({
+            "pattern": "*.py",
+            "include_ignored": True,
+            "path": str(tmp_path),
+        })
+
+        assert result.success
+        assert "ignored.py" in result.output
+
+    def test_hard_excludes_remain_when_ignored_files_are_included(self, tmp_path):
+        (tmp_path / "app.py").write_text("")
+        node_modules = tmp_path / "node_modules"
+        node_modules.mkdir()
+        (node_modules / "dependency.py").write_text("")
+
+        result = self.tool.execute({
+            "pattern": "*.py",
+            "include_ignored": True,
+            "path": str(tmp_path),
+        })
+
+        assert result.success
+        assert "app.py" in result.output
+        assert "dependency.py" not in result.output
+
+    def test_requires_at_least_one_include_pattern(self, tmp_path):
+        result = self.tool.execute({"path": str(tmp_path)})
+
+        assert not result.success
+        assert "pattern or include_patterns" in result.error
+
+    def test_rejects_invalid_pattern_array(self, tmp_path):
+        result = self.tool.execute({
+            "include_patterns": "*.py",
+            "path": str(tmp_path),
+        })
+
+        assert not result.success
+        assert "include_patterns must be an array" in result.error
+
+    def test_reports_missing_ripgrep(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.search_tool.shutil.which", lambda _: None)
+
+        result = self.tool.execute({"pattern": "*.py", "path": str(tmp_path)})
+
+        assert not result.success
+        assert "Ripgrep (rg) is required" in result.error
+
+    def test_result_limit_reports_more_matches(self, tmp_path):
+        for index in range(55):
+            (tmp_path / f"module_{index:02}.py").write_text("")
+
+        result = self.tool.execute({"pattern": "*.py", "path": str(tmp_path)})
+
+        assert result.success
+        assert "Showing first 50 results, there may be more" in result.output
+        assert len([line for line in result.output.splitlines() if line.endswith(".py")]) == 50
+
+    def test_single_file_path_remains_supported(self, tmp_path):
+        target = tmp_path / "target.py"
+        target.write_text("")
+
+        result = self.tool.execute({"pattern": "*.py", "path": str(target)})
+
+        assert result.success
+        assert str(target) in result.output
+
 # ===========================================================================
 # FindSymbolTool
 # ===========================================================================

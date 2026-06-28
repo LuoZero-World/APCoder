@@ -15,7 +15,9 @@ tools/search_tool.py
 from __future__ import annotations
 
 import re
-from pathlib import Path
+import shutil
+import subprocess
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from tools.base import BaseTool, ToolResult
@@ -29,6 +31,20 @@ _SKIP_DIRS: frozenset[str] = frozenset({
     ".git", "__pycache__", ".venv", "venv", "node_modules",
     ".mypy_cache", ".pytest_cache", "dist", "build", "*.egg-info",
 })
+
+# find_files 即使开启 include_ignored，也始终跳过这些高噪声目录。
+_RG_HARD_EXCLUDE_GLOBS: tuple[str, ...] = (
+    "!**/.git/**",
+    "!**/__pycache__/**",
+    "!**/.venv/**",
+    "!**/venv/**",
+    "!**/node_modules/**",
+    "!**/.mypy_cache/**",
+    "!**/.pytest_cache/**",
+    "!**/dist/**",
+    "!**/build/**",
+    "!**/*.egg-info/**",
+)
 
 
 class SearchTextTool(BaseTool):
@@ -139,11 +155,14 @@ class SearchTextTool(BaseTool):
 
 class FindFilesTool(BaseTool):
     """
-    按文件名 pattern 查找文件。
+    使用 Ripgrep 按文件名 glob 查找文件。
 
     params:
-        pattern (str): glob 风格的文件名 pattern（如 "*.py", "test_*.py"）
-        path (str):    搜索根目录（默认当前目录）
+        pattern (str):            单个 glob 的兼容写法
+        include_patterns (list):  多个包含 glob
+        exclude_patterns (list):  多个排除 glob
+        include_ignored (bool):   是否包含被 ignore 规则忽略的文件
+        path (str):               搜索根目录（默认当前目录）
     """
 
     @property
@@ -153,8 +172,9 @@ class FindFilesTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            "Find files by name pattern (glob style). "
-            "Example: pattern='test_*.py' finds all test files. "
+            "Find files with required Ripgrep (rg) using glob patterns. "
+            "Use pattern for one include or include_patterns for multiple includes; "
+            "exclude_patterns removes matches. Respects ignore files by default. "
             f"Returns at most {MAX_RESULTS} results."
         )
 
@@ -165,50 +185,139 @@ class FindFilesTool(BaseTool):
             "properties": {
                 "pattern": {
                     "type": "string",
-                    "description": "Glob pattern for file names (e.g. '*.py', 'conftest.py')",
+                    "description": "Single include glob; compatible with the original API",
+                },
+                "include_patterns": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Multiple include globs; merged with pattern as a union",
+                },
+                "exclude_patterns": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Globs to exclude from the included files",
+                },
+                "include_ignored": {
+                    "type": "boolean",
+                    "description": "Include ignored files (default false)",
                 },
                 "path": {
                     "type": "string",
                     "description": "Root directory to search in (default: current directory)",
                 },
             },
-            "required": ["pattern"],
         }
 
     def execute(self, params: dict[str, Any]) -> ToolResult:
-        # 1. pattern 是文件名 glob，不是内容正则；path 是搜索根目录。
-        pattern = params.get("pattern", "")
+        # 1. 读取并校验搜索路径；不存在时沿用原工具的错误语义。
         search_path = Path(params.get("path", "."))
-
-        # 2. 根目录不存在视为工具失败。
         if not search_path.exists():
             return ToolResult(
                 success=False, output="", error=f"Path not found: {search_path}"
             )
 
-        # 3. 复用 _iter_files 的目录跳过逻辑，并限制最多返回 MAX_RESULTS 个文件。
-        results: list[str] = []
-        for filepath in _iter_files(search_path, pattern):
-            results.append(str(filepath))
-            if len(results) >= MAX_RESULTS:
-                break
+        # 2. 合并单 pattern 与 include_patterns，形成包含模式的并集。
+        includes, error = _collect_include_patterns(params)
+        if error:
+            return ToolResult(success=False, output="", error=error)
 
-        # 4. 没找到文件也算成功观察，因为搜索动作本身没有出错。
+        # 3. 校验排除模式与 include_ignored，避免把错误类型传给子进程。
+        excludes, error = _validate_pattern_list(
+            params.get("exclude_patterns"), "exclude_patterns"
+        )
+        if error:
+            return ToolResult(success=False, output="", error=error)
+
+        include_ignored = params.get("include_ignored", False)
+        if not isinstance(include_ignored, bool):
+            return ToolResult(
+                success=False,
+                output="",
+                error="include_ignored must be a boolean",
+            )
+
+        # 4. rg 是 find_files 的必需依赖；缺失时明确失败，不做 Python 回退。
+        rg_path = shutil.which("rg")
+        if rg_path is None:
+            return ToolResult(
+                success=False,
+                output="",
+                error="Ripgrep (rg) is required for find_files but was not found in PATH",
+            )
+
+        # 5. 构造 rg 文件发现命令；正向 include 留到流式输出阶段过滤。
+        command = [rg_path, "--files", "--hidden", "--no-require-git"]
+        if include_ignored:
+            command.append("--no-ignore")
+        for exclude_pattern in excludes:
+            command.extend(["--glob", _as_exclude_glob(exclude_pattern)])
+        for hard_exclude in _RG_HARD_EXCLUDE_GLOBS:
+            command.extend(["--glob", hard_exclude])
+        command.extend(["--", str(search_path)])
+
+        # 6. 逐行读取 rg 输出，仅多读一条用于判断是否还有更多结果。
+        results: list[str] = []
+        has_more = False
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except OSError as exc:
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Failed to start Ripgrep: {exc}",
+            )
+
+        assert process.stdout is not None
+        for raw_line in process.stdout:
+            filepath = raw_line.rstrip("\r\n")
+            if not filepath:
+                continue
+            # rg 的正向 glob 会覆盖 .gitignore，因此在流式结果上匹配 include。
+            if not _matches_include_glob(filepath, includes):
+                continue
+            if len(results) >= MAX_RESULTS:
+                has_more = True
+                process.terminate()
+                break
+            results.append(filepath)
+
+        # 7. 正常完成时检查退出码；主动截断时不把 terminate 视为搜索失败。
+        try:
+            _, stderr = process.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            _, stderr = process.communicate()
+
+        if not has_more and process.returncode not in (0, 1):
+            detail = stderr.strip() or f"exit code {process.returncode}"
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"Ripgrep failed: {detail[:1000]}",
+            )
+
+        # 8. 组装紧凑结果；无匹配仍属于成功观察。
         if not results:
             return ToolResult(
                 success=True,
-                output=f"No files found matching '{pattern}' in {search_path}",
+                output=f"No files found matching {includes!r} in {search_path}",
             )
 
         suffix = ""
-        if len(results) == MAX_RESULTS:
-            suffix = f"\n[Showing first {MAX_RESULTS} results]"
+        if has_more:
+            suffix = f"\n[Showing first {MAX_RESULTS} results, there may be more]"
 
         return ToolResult(
             success=True,
             output="\n".join(results) + suffix,
         )
-
 
 class FindSymbolTool(BaseTool):
     """
@@ -300,6 +409,62 @@ class FindSymbolTool(BaseTool):
 # ---------------------------------------------------------------------------
 # 内部辅助
 # ---------------------------------------------------------------------------
+
+def _validate_pattern_list(
+    value: Any,
+    field_name: str,
+) -> tuple[list[str], str | None]:
+    """校验 glob 数组，并保持原有顺序去重。"""
+    if value is None:
+        return [], None
+    if not isinstance(value, list):
+        return [], f"{field_name} must be an array of non-empty strings"
+
+    patterns: list[str] = []
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            return [], f"{field_name}[{index}] must be a non-empty string"
+        pattern = item.strip()
+        if pattern not in seen:
+            seen.add(pattern)
+            patterns.append(pattern)
+    return patterns, None
+
+
+def _collect_include_patterns(
+    params: dict[str, Any],
+) -> tuple[list[str], str | None]:
+    """合并兼容参数 pattern 和多值 include_patterns。"""
+    patterns: list[str] = []
+    raw_pattern = params.get("pattern")
+    if raw_pattern is not None:
+        if not isinstance(raw_pattern, str) or not raw_pattern.strip():
+            return [], "pattern must be a non-empty string"
+        patterns.append(raw_pattern.strip())
+
+    extra_patterns, error = _validate_pattern_list(
+        params.get("include_patterns"), "include_patterns"
+    )
+    if error:
+        return [], error
+
+    # 兼容参数排在前面；去重时保留首次出现位置，便于测试和诊断。
+    deduplicated = list(dict.fromkeys([*patterns, *extra_patterns]))
+    if not deduplicated:
+        return [], "pattern or include_patterns must contain at least one glob"
+    return deduplicated, None
+
+
+def _matches_include_glob(filepath: str, patterns: list[str]) -> bool:
+    """在 rg 已完成 ignore 过滤的路径上匹配任一正向 glob。"""
+    normalized_path = filepath.replace("\\", "/")
+    candidate = PurePosixPath(normalized_path)
+    return any(candidate.match(pattern.replace("\\", "/")) for pattern in patterns)
+
+def _as_exclude_glob(pattern: str) -> str:
+    """把用户排除模式规范成 rg 需要的负向 glob。"""
+    return pattern if pattern.startswith("!") else f"!{pattern}"
 
 def _iter_files(root: Path, glob_pattern: str):
     """

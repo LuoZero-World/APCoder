@@ -37,18 +37,18 @@ rg --files --hidden
 
 参数映射规则：
 
-- 每个包含模式转换为 `-g <pattern>`。
+- Ripgrep 的正向 `--glob` 会覆盖 `.gitignore`，因此包含模式在 `rg --files` 的流式结果上匹配；文件发现仍完全由 Ripgrep 完成。
 - 每个排除模式转换为 `-g !<pattern>`，并放在包含模式之后。
 - `include_ignored=false` 时使用 Ripgrep 默认 ignore 行为，遵守 `.gitignore`、`.ignore` 和全局 ignore 配置。
 - `include_ignored=true` 时加入 `--no-ignore`。
 - 内置跳过目录始终转换为负向 glob，即使启用 `include_ignored` 也不搜索 `.git`、`node_modules`、虚拟环境、缓存和构建产物。
 
-`--hidden` 用于发现 `.github` 等隐藏源码或配置；`.git` 由内置负向 glob单独排除。
+`--hidden` 用于发现 `.github` 等隐藏源码或配置；`.git` 由内置负向 glob 单独排除。
 
 ## 执行流程
 
 1. 读取并校验 `path`、包含模式、排除模式和 `include_ignored`。
-2. 合并 `pattern` 与 `include_patterns`，去重后生成 Ripgrep glob 参数。
+2. 合并 `pattern` 与 `include_patterns` 并去重，作为流式结果的包含过滤器。
 3. 检查 `rg` 是否可执行；缺失时返回明确错误。
 4. 启动 `rg --files`，逐行消费标准输出，避免把整个仓库的文件清单一次性载入内存。
 5. 收集前 50 个结果；检测到第 51 个结果后终止进程，并在输出中标记可能还有更多结果。
