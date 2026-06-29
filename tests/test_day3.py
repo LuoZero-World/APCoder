@@ -114,33 +114,52 @@ class TestFileViewTool:
     tool = FileViewTool()
 
     def test_view_from_start(self, large_file):
-        result = self.tool.execute({"path": str(large_file), "start_line": 1})
+        result = self.tool.execute({"path": str(large_file)})
         assert result.success
         assert "1 |" in result.output
-        assert "100 |" in result.output
-        assert "101 |" not in result.output   # 窗口只有 100 行
+        assert "300 |" in result.output
+        assert "301 |" not in result.output   # 默认读取 300 行
 
     def test_view_middle_section(self, large_file):
-        result = self.tool.execute({"path": str(large_file), "start_line": 200})
+        result = self.tool.execute({"path": str(large_file), "offset": 200, "limit": 25})
         assert result.success
         assert "200 |" in result.output
+        assert "224 |" in result.output
+        assert "225 |" not in result.output
 
     def test_view_shows_navigation_hint(self, large_file):
-        result = self.tool.execute({"path": str(large_file), "start_line": 1})
+        result = self.tool.execute({"path": str(large_file)})
         assert "Next:" in result.output or "End of file" in result.output
+        assert "offset=301" in result.output
+        assert "limit=300" in result.output
 
     def test_view_last_window_shows_end(self, large_file):
-        result = self.tool.execute({"path": str(large_file), "start_line": 550})
+        result = self.tool.execute({"path": str(large_file), "offset": 550})
         assert "End of file" in result.output
 
-    def test_view_start_line_beyond_eof(self, sample_file):
-        result = self.tool.execute({"path": str(sample_file), "start_line": 9999})
+    def test_view_offset_beyond_eof(self, sample_file):
+        result = self.tool.execute({"path": str(sample_file), "offset": 9999})
         assert not result.success
         assert "exceeds" in result.error.lower()
 
     def test_view_nonexistent_file(self, tmp_path):
         result = self.tool.execute({"path": str(tmp_path / "missing.py")})
         assert not result.success
+
+    def test_view_limit_is_capped_by_configuration(self, large_file):
+        tool = FileViewTool(max_lines=5)
+        result = tool.execute({"path": str(large_file), "limit": 20})
+        assert result.success
+        assert "5 |" in result.output
+        assert "6 |" not in result.output
+        assert "capped" in result.output
+
+    def test_view_schema_uses_path_offset_and_limit(self):
+        properties = self.tool.parameters_schema["properties"]
+        assert set(properties) == {"path", "offset", "limit"}
+        assert properties["offset"]["default"] == 1
+        assert properties["limit"]["default"] == 300
+        assert properties["limit"]["maximum"] == 2_000
 
 
 # ===========================================================================

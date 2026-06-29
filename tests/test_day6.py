@@ -82,6 +82,9 @@ class TestParseConfig:
         assert config.tools.file.max_read_lines == 12
         assert config.tools.file.max_view_lines == 7
 
+    def test_file_view_max_lines_default(self):
+        assert _parse({}).tools.file.max_view_lines == 2_000
+
     def test_partial_section_uses_defaults(self):
         config = _parse({"llm": {"provider": "openai"}})
         assert config.llm.provider == "openai"
@@ -115,12 +118,12 @@ class TestToolConfigWiring:
         shell_result = registry.execute_tool("shell", {"cmd": "ignored"})
         assert "truncated" in shell_result.output
 
-        read_result = registry.execute_tool("file_read", {"path": str(target)})
-        assert "3 |" in read_result.output
-        assert "4 |" not in read_result.output
-        assert "2 more lines not shown" in read_result.output
+        assert "file_read" not in registry
 
-        view_result = registry.execute_tool("file_view", {"path": str(target), "start_line": 2})
+        view_result = registry.execute_tool(
+            "file_view",
+            {"path": str(target), "offset": 2, "limit": 10},
+        )
         assert "2 |" in view_result.output
         assert "3 |" in view_result.output
         assert "4 |" not in view_result.output

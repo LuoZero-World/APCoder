@@ -6,3 +6,4 @@ __pycache__/
 *.pyc
 benchmarks/quixbugs/results/*.json
 benchmarks/quixbugs/tmp/
+bug_env/

@@ -49,7 +49,7 @@ class ShellToolConfig:
 @dataclass
 class FileToolConfig:
     max_read_lines: int = 500
-    max_view_lines: int = 100
+    max_view_lines: int = 2_000
 
 
 @dataclass
@@ -149,7 +149,7 @@ def _parse(data: dict[str, Any]) -> AppConfig:
         ),
         file=FileToolConfig(
             max_read_lines=int(file_raw.get("max_read_lines", 500)),
-            max_view_lines=int(file_raw.get("max_view_lines", 100)),
+            max_view_lines=int(file_raw.get("max_view_lines", 2_000)),
         ),
     )
 

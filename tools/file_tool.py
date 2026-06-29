@@ -8,7 +8,7 @@ tools/file_tool.py
 
 设计原则：
 - file_read 对大文件做行数截断，超出时提示用 file_view 分页
-- file_view 维护"窗口"概念，每次返回固定行数，agent 可 scroll
+- file_view 使用 offset/limit 查看指定行范围，并由配置限制最大行数
 - file_write 写入前自动创建父目录，写入后返回行数确认
 - 所有路径都限制在 repo_path 内（防止读取系统文件）
 """
@@ -40,7 +40,7 @@ class FileReadTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            f"Read the contents of a file. "
+            f"Read a small file after the target is known. "
             f"Files longer than {self._max_read_lines} lines will be truncated; "
             f"use file_view with line numbers to read specific sections."
         )
@@ -97,7 +97,7 @@ class FileReadTool(BaseTool):
         if truncated:
             suffix = (
                 f"\n... ({total - self._max_read_lines} more lines not shown) "
-                f"Use file_view with start_line to read the rest."
+                f"Use file_view with offset to read the rest."
             )
 
         # 5. 成功结果写入 output，后续由 core.py 转成 Observation 注入 history/EventLog。
@@ -109,15 +109,18 @@ class FileReadTool(BaseTool):
 
 class FileViewTool(BaseTool):
     """
-    分窗口查看文件，每次返回配置的窗口行数。
+    按指定行范围查看文件。
 
     params:
-        path (str):       文件路径
-        start_line (int): 从第几行开始（1-indexed，默认 1）
+        path (str):   文件路径
+        offset (int): 从第几行开始（1-indexed，默认 1）
+        limit (int): 读取多少行（默认 300，不超过配置上限）
     """
 
-    def __init__(self, window_lines: int = 100) -> None:
-        self._window_lines = int(window_lines)
+    DEFAULT_LIMIT = 300
+
+    def __init__(self, max_lines: int = 2_000) -> None:
+        self._max_lines = int(max_lines)
 
     @property
     def name(self) -> str:
@@ -126,8 +129,9 @@ class FileViewTool(BaseTool):
     @property
     def description(self) -> str:
         return (
-            f"View a specific section of a file, {self._window_lines} lines at a time. "
-            f"Use start_line to scroll through large files. Lines are 1-indexed."
+            "View a specific section of a file by line range. "
+            f"The default limit is {self.DEFAULT_LIMIT} lines and the configured maximum is "
+            f"{self._max_lines} lines. Offsets are 1-indexed."
         )
 
     @property
@@ -139,18 +143,42 @@ class FileViewTool(BaseTool):
                     "type": "string",
                     "description": "Path to the file",
                 },
-                "start_line": {
+                "offset": {
                     "type": "integer",
-                    "description": f"First line to show (1-indexed, default 1)",
+                    "minimum": 1,
+                    "default": 1,
+                    "description": "First line to show (1-indexed)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": self._max_lines,
+                    "default": min(self.DEFAULT_LIMIT, self._max_lines),
+                    "description": "Maximum number of lines to return",
                 },
             },
             "required": ["path"],
         }
 
     def execute(self, params: dict[str, Any]) -> ToolResult:
-        # 1. 读取路径和起始行；start_line 最小为 1，符合用户看到的行号习惯。
+        # 1. offset 使用面向用户的 1-based 行号；limit 默认 300，并受配置上限约束。
         path = Path(params.get("path", ""))
-        start_line = max(1, int(params.get("start_line", 1)))
+        try:
+            offset = int(params.get("offset", 1))
+            requested_limit = int(params.get("limit", self.DEFAULT_LIMIT))
+        except (TypeError, ValueError):
+            return ToolResult(
+                success=False,
+                output="",
+                error="offset and limit must be integers",
+            )
+
+        if offset < 1:
+            return ToolResult(success=False, output="", error="offset must be at least 1")
+        if requested_limit < 1:
+            return ToolResult(success=False, output="", error="limit must be at least 1")
+
+        limit = min(requested_limit, self._max_lines)
 
         # 2. 和 file_read 一样，先把路径错误封装为工具失败结果。
         if not path.exists():
@@ -166,30 +194,39 @@ class FileViewTool(BaseTool):
 
         # 4. 起始行超过文件长度时直接报错，避免返回空窗口误导 Agent。
         total = len(lines)
-        if start_line > total:
+        if offset > total:
             return ToolResult(
                 success=False,
                 output="",
-                error=f"start_line {start_line} exceeds file length ({total} lines)",
+                error=f"offset {offset} exceeds file length ({total} lines)",
             )
 
         # 5. 计算当前窗口范围，并保留真实行号，便于下一轮继续定位。
-        end_line = min(start_line + self._window_lines - 1, total)
-        window = lines[start_line - 1 : end_line]
+        end_line = min(offset + limit - 1, total)
+        window = lines[offset - 1 : end_line]
 
         numbered = "\n".join(
-            f"{start_line + i:4d} | {line}"
+            f"{offset + i:4d} | {line}"
             for i, line in enumerate(window)
         )
 
         # 6. 在输出尾部给出下一次 file_view 的建议，相当于轻量分页导航。
-        nav = ""
-        if end_line < total:
-            nav = f"\n[Lines {start_line}–{end_line} of {total}. Next: file_view path={path} start_line={end_line + 1}]"
-        else:
-            nav = f"\n[Lines {start_line}–{end_line} of {total}. End of file.]"
+        cap_note = ""
+        if requested_limit > self._max_lines:
+            cap_note = (
+                f"\n[Requested limit {requested_limit} was capped at the configured "
+                f"maximum of {self._max_lines}.]"
+            )
 
-        return ToolResult(success=True, output=numbered + nav)
+        if end_line < total:
+            nav = (
+                f"\n[Lines {offset}–{end_line} of {total}. "
+                f"Next: file_view path={path} offset={end_line + 1} limit={limit}]"
+            )
+        else:
+            nav = f"\n[Lines {offset}–{end_line} of {total}. End of file.]"
+
+        return ToolResult(success=True, output=numbered + cap_note + nav)
 
 
 class FileWriteTool(BaseTool):

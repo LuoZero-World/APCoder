@@ -58,7 +58,8 @@ class SearchTextTool(BaseTool):
     def description(self) -> str:
         return (
             "Search file contents with a regular expression. Returns structured "
-            "matches containing path, line, column, match span, and nearby context."
+            "matches containing path, line, column, match span, and nearby context. "
+            "Use returned locations with file_view for focused reading."
         )
 
     @property
@@ -238,7 +239,8 @@ class FindFilesTool(BaseTool):
     def description(self) -> str:
         return (
             "Find files with required Ripgrep (rg) using glob patterns. "
-            "Use pattern for one include or include_patterns for multiple includes; "
+            "Use this first when relevant file paths are unknown, then use search_text "
+            "or find_symbol. Use pattern for one include or include_patterns for multiple includes; "
             "exclude_patterns removes matches. Respects ignore files by default. "
             f"Returns at most {MAX_RESULTS} results."
         )
@@ -403,7 +405,7 @@ class FindSymbolTool(BaseTool):
         return (
             "Find function or class definitions in Python files. "
             "Searches for 'def symbol' or 'class symbol' patterns. "
-            "Supports partial name matching."
+            "Supports partial name matching; use the returned location with file_view."
         )
 
     @property

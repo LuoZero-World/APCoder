@@ -27,33 +27,34 @@ from llm.base import LLMToolSchema
 # ---------------------------------------------------------------------------
 
 _SYSTEM_TEMPLATE = """\
-You are an autonomous coding agent. Your goal is to understand a coding task, \
-explore the repository, make the necessary code changes, and verify they work correctly.
+你是一个自主编程智能体。你的目标是理解编程任务、探索代码仓库、完成必要的代码修改，\
+并验证修改能够正确工作。
 
-## Workflow
-1. **Explore**: Understand the repository structure and the problem
-2. **Plan**: Identify what needs to change and why
-3. **Edit**: Make precise, minimal changes using the available tools
-4. **Verify**: Run tests to confirm the fix works
-5. **Finish**: When everything is done, return a final natural-language summary without any tool call
+## 工作流程
+1. **探索**：了解代码仓库的结构和问题
+2. **规划**：确定需要修改的内容及其原因
+3. **编辑**：使用可用工具进行精确且最小化的修改
+4. **验证**：运行测试，确认修复有效
+5. **完成**：所有工作完成后，用自然语言给出最终总结，不要调用任何工具
 
-## Rules
+## 规则
 
-- Think step by step, but keep responses brief: prefer tool calls over long explanations.
-- Use exactly one tool call per step, then wait for the observation before deciding next.
-- Use OpenAI function-calling for tools; do not write textual `Action:` / `Params:` blocks unless function calling is unavailable.
-- Make the smallest useful change, then run focused tests after editing.
-- Do not repeat unhelpful tool calls; if tests fail, read the error and fix the root cause.
-- If repeated attempts fail, change strategy; if the task cannot be solved, finish with a concise explanation and no tool call.
+- 逐步思考，但保持回复简洁：优先调用工具，避免冗长解释。
+- 每一步只调用一次工具，然后等待观察结果，再决定下一步。
+- 不清楚相关文件时，先使用 find_files，再使用 search_text 或 find_symbol 定位具体行。
+- 如果已经知道准确的文件和行号，直接调用 file_view 查看具体代码。
+- 进行能够解决问题的最小修改，并在编辑后运行针对性测试。
+- 不要重复无效的工具调用；如果测试失败，阅读错误信息并修复根本原因。
+- 如果多次尝试仍然失败，请改变策略；如果任务无法解决，请给出简洁说明并结束，不要调用工具。
 
 
 {workspace_context}
 
-## Available tools
+## 可用工具
 {tool_descriptions}
 """
 
-_NO_REPO_SUMMARY = "(Repository summary not yet available — use find_files and file_read to explore)"
+_NO_REPO_SUMMARY = "（代码仓库摘要尚不可用——请使用 find_files、search_text 和 file_view 进行探索）"
 _DOC_NAMES = ("AGENTS.md", "README.md", "pyproject.toml", "package.json")
 _PROJECT_DOC_SNIPPET_CHARS = 1200
 
@@ -86,11 +87,11 @@ def build_system_prompt(
 def _format_tool_descriptions(tools: list[LLMToolSchema]) -> str:
     """把工具列表格式化为易读的描述块。"""
     if not tools:
-        return "(no tools available)"
+        return "（没有可用工具）"
     lines = []
     for tool in tools:
         lines.append(f"- **{tool.name}**: {tool.description}")
-        lines.append(f"  Parameters: {_format_parameter_summary(tool.parameters)}")
+        lines.append(f"  参数：{_format_parameter_summary(tool.parameters)}")
     return "\n".join(lines)
 
 
@@ -98,18 +99,18 @@ def _format_parameter_summary(parameters: dict) -> str:
     """Format a compact summary from a JSON Schema object."""
     properties = parameters.get("properties", {}) if isinstance(parameters, dict) else {}
     if not properties:
-        return "none"
+        return "无"
 
     required = set(parameters.get("required", []))
     parts = []
     for name, schema in properties.items():
         if not isinstance(schema, dict):
-            kind = "unknown"
+            kind = "未知"
         else:
-            kind = schema.get("type") or "unknown"
+            kind = schema.get("type") or "未知"
             if isinstance(kind, list):
                 kind = "|".join(str(item) for item in kind)
-        marker = "required" if name in required else "optional"
+        marker = "必填" if name in required else "可选"
         parts.append(f"{name}: {kind} ({marker})")
     return ", ".join(parts)
 
@@ -124,14 +125,14 @@ def _build_workspace_context(repo_path: str, repo_summary: str | None) -> str:
     summary = repo_summary or _NO_REPO_SUMMARY
 
     return (
-        "## Workspace\n"
+        "## 工作区\n"
         f"current_path: {current_path}\n"
-        f"repo_root: {repo_root or '(unknown)'}\n\n"
-        "git status:\n"
-        f"{status or 'clean'}\n\n"
-        "Project docs:\n"
+        f"repo_root: {repo_root or '（未知）'}\n\n"
+        "Git 状态：\n"
+        f"{status or '干净（无变更）'}\n\n"
+        "项目文档：\n"
         f"{docs}\n\n"
-        "Repo map:\n"
+        "代码仓库概览：\n"
         f"{summary}"
     )
 
@@ -160,7 +161,7 @@ def _git_output(repo_path: str, args: list[str]) -> str:
 def _format_project_docs(root: Path) -> str:
     """Read a short snippet from well-known project docs."""
     if not root.exists():
-        return "(none)"
+        return "（无）"
 
     lines: list[str] = []
     for name in _DOC_NAMES:
@@ -172,14 +173,14 @@ def _format_project_docs(root: Path) -> str:
         except OSError:
             continue
         lines.append(f"- {name}:\n{_clip_text(text, _PROJECT_DOC_SNIPPET_CHARS)}")
-    return "\n".join(lines) if lines else "(none)"
+    return "\n".join(lines) if lines else "（无）"
 
 
 def _clip_text(text: str, limit: int) -> str:
     text = str(text).strip()
     if len(text) <= limit:
         return text
-    return text[:limit] + f"\n...[truncated {len(text) - limit} chars]"
+    return text[:limit] + f"\n……[已截断 {len(text) - limit} 个字符]"
 
 
 # ---------------------------------------------------------------------------
@@ -187,32 +188,32 @@ def _clip_text(text: str, limit: int) -> str:
 # ---------------------------------------------------------------------------
 
 REFLECTION_TEST_FAILED = """\
-[REFLECTION] The tests just failed. Before your next action, consider:
-1. Read the full error message above carefully — what is the root cause?
-2. Is your last edit correct? Did it introduce a new bug?
-3. Do you need to look at more context before editing again?
+[反思/REFLECTION] 测试刚刚失败了。在采取下一步行动之前，请思考：
+1. 仔细阅读上面的完整错误信息——根本原因是什么？
+2. 你上一次的编辑是否正确？是否引入了新的错误？
+3. 再次编辑之前，是否需要查看更多上下文？
 
-Be specific about what you will do differently. What is your next action?\
+请明确说明你会如何调整做法。你的下一步行动是什么？\
 """
 
 REFLECTION_NO_EDIT = """\
-[REFLECTION] You have taken {n} steps without editing any file.
-You may be stuck in an exploration loop. Consider:
-1. Do you have enough context to make a change now?
-2. If yes — make the edit
-3. If no — identify exactly what you still need, get it in one targeted step, then edit
+[反思/REFLECTION] 你已经执行了 {n} 个步骤，但尚未编辑任何文件。
+你可能陷入了反复探索。请思考：
+1. 你现在是否已经掌握足够的上下文来进行修改？
+2. 如果是——立即进行编辑
+3. 如果不是——明确还需要什么，通过一个有针对性的步骤获取信息，然后进行编辑
 
-What specific action will move the task forward?\
+采取什么具体行动可以推动任务向前进展？\
 """
 
 REFLECTION_LOOP_DETECTED = """\
-[REFLECTION] You have repeated the same action {n} times in a row.
-This suggests you are stuck. Stop and reconsider:
-1. What are you trying to achieve with this action?
-2. Why isn't it working?
-3. What completely different approach could you try?
+[反思/REFLECTION] 你已经连续 {n} 次重复相同的操作。
+这说明你可能遇到了阻碍。请停下来重新思考：
+1. 你试图通过这个操作实现什么目标？
+2. 为什么它没有奏效？
+3. 你可以尝试哪种完全不同的方法？
 
-Do not repeat the same action again.\
+不要再次重复相同的操作。\
 """
 
 
@@ -233,21 +234,21 @@ def reflection_loop_detected(n: int) -> str:
 # ---------------------------------------------------------------------------
 
 _TASK_TEMPLATE = """\
-Please fix the following issue in the repository at {repo_path}.
+请修复位于 {repo_path} 的代码仓库中的以下问题。
 
-## Task
+## 任务
 {description}
 {issue_section}
-## Instructions
-- Start by exploring the repository to understand the codebase
-- Make the minimal changes necessary to fix the issue
-- Run the tests to verify your fix works
-- When complete, return a final answer with a summary of your changes and no tool call\
+## 操作要求
+- 首先探索代码仓库，了解代码库
+- 仅进行修复问题所必需的最小修改
+- 运行测试，验证修复有效
+- 完成后，在最终回答中总结所做的修改，不要调用工具\
 """
 
 _ISSUE_SECTION_TEMPLATE = """
-## GitHub Issue
-URL: {issue_url}
+## GitHub 议题
+网址：{issue_url}
 """
 
 

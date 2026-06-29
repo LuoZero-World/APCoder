@@ -66,7 +66,7 @@ def _build_registry(cfg, runtime=None, repo_path=None):
     """根据配置组装工具注册表。"""
     from tools.base import ToolRegistry
     from tools.file_edit_tool import FileEditTool
-    from tools.file_tool import FileReadTool, FileViewTool, FileWriteTool
+    from tools.file_tool import FileViewTool, FileWriteTool
     from tools.git_tool import GitAddTool, GitCommitTool, GitDiffTool, GitStatusTool
     from tools.search_tool import FindFilesTool, FindSymbolTool, SearchTextTool
     from tools.shell_tool import ShellTool
@@ -78,8 +78,7 @@ def _build_registry(cfg, runtime=None, repo_path=None):
             runtime=runtime,
             max_output_chars=cfg.tools.shell.max_output_tokens,
         ))
-        .register(FileReadTool(max_read_lines=cfg.tools.file.max_read_lines))
-        .register(FileViewTool(window_lines=cfg.tools.file.max_view_lines))
+        .register(FileViewTool(max_lines=cfg.tools.file.max_view_lines))
         .register(FileWriteTool())
         .register(FileEditTool(repo_root=repo_path or "."))
         .register(SearchTextTool())
