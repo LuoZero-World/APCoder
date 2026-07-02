@@ -7,3 +7,4 @@ __pycache__/
 benchmarks/quixbugs/results/*.json
 benchmarks/quixbugs/tmp/
 bug_env/
+/config/default.yaml
