@@ -66,11 +66,35 @@ class ContextConfig:
 
 
 @dataclass
+class FeishuNotificationConfig:
+    webhook: str = ''
+    secret: str = ''
+    keyword: str = '[ACoder]'
+
+
+@dataclass
+class WechatWorkNotificationConfig:
+    webhook: str = ''
+    keyword: str = '[ACoder]'
+
+
+@dataclass
+class NotificationsConfig:
+    feishu: FeishuNotificationConfig = field(
+        default_factory=FeishuNotificationConfig
+    )
+    wechat_work: WechatWorkNotificationConfig = field(
+        default_factory=WechatWorkNotificationConfig
+    )
+
+
+@dataclass
 class AppConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     agent: AgentCfg = field(default_factory=AgentCfg)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
+    notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +150,8 @@ def _parse(data: dict[str, Any]) -> AppConfig:
     tools_raw = data.get("tools", {})
     context_raw = data.get("context", {})
 
+    notifications_raw = data.get('notifications', {})
+
     llm = LLMConfig(
         provider=llm_raw.get("provider", "anthropic"),
         model=llm_raw.get("model", "claude-sonnet-4-5"),
@@ -161,7 +187,27 @@ def _parse(data: dict[str, Any]) -> AppConfig:
         ),
     )
 
-    return AppConfig(llm=llm, agent=agent, tools=tools, context=context)
+    feishu_raw = notifications_raw.get('feishu', {})
+    wechat_work_raw = notifications_raw.get('wechat_work', {})
+    notifications = NotificationsConfig(
+        feishu=FeishuNotificationConfig(
+            webhook=feishu_raw.get('webhook', '') or '',
+            secret=feishu_raw.get('secret', '') or '',
+            keyword=feishu_raw.get('keyword', '') or '[ACoder]',
+        ),
+        wechat_work=WechatWorkNotificationConfig(
+            webhook=wechat_work_raw.get('webhook', '') or '',
+            keyword=wechat_work_raw.get('keyword', '') or '[ACoder]',
+        ),
+    )
+
+    return AppConfig(
+        llm=llm,
+        agent=agent,
+        tools=tools,
+        context=context,
+        notifications=notifications,
+    )
 
 
 def merge_cli_overrides(

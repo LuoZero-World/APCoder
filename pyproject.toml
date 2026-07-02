@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "A general-purpose coding agent supporting Claude, OpenAI, DeepSeek, Groq and Ollama"
 requires-python = ">=3.11"
 dependencies = [
+    'requests>=2.28.0',
     "anthropic>=0.30.0",
     "openai>=1.30.0",
     "click>=8.1.0",

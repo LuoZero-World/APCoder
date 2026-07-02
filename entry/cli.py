@@ -23,6 +23,7 @@ entry/cli.py
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -61,6 +62,20 @@ def magenta(t: str) -> str: return _c(t, "35")
 # ---------------------------------------------------------------------------
 # 构建 agent 各组件
 # ---------------------------------------------------------------------------
+
+def _apply_notification_config(config) -> None:
+    '''把 YAML 通知配置映射到发送模块使用的环境变量。'''
+    values = {
+        'FEISHU_WEBHOOK': config.feishu.webhook,
+        'FEISHU_WEBHOOK_SECRET': config.feishu.secret,
+        'FEISHU_KEYWORD': config.feishu.keyword,
+        'WECHAT_WORK_WEBHOOK': config.wechat_work.webhook,
+        'WECHAT_WORK_KEYWORD': config.wechat_work.keyword,
+    }
+    for env_name, value in values.items():
+        if value and env_name not in os.environ:
+            os.environ[env_name] = value
+
 
 def _build_registry(cfg, runtime=None, repo_path=None):
     """根据配置组装工具注册表。"""
@@ -209,6 +224,7 @@ def run(
     config = merge_cli_overrides(
         config, provider=provider, model=model, max_steps=max_steps
     )
+    _apply_notification_config(config.notifications)
 
     # 解析任务描述
     if task_file:
@@ -323,6 +339,33 @@ def run(
     if result.error:
         click.echo(red(f"Error   : {result.error}"))
     click.echo(bold("─" * 60) + "\n")
+
+    # 通知发送失败需要记录日志，但不能改变任务本身的执行结果。
+    from agent.notifications.feishu import (
+        FeishuNotificationError,
+        send_feishu_text,
+    )
+    from agent.notifications.wechat_work import (
+        WechatWorkNotificationError,
+        send_wechat_work_text,
+    )
+    notification_title = '任务完成' if result.is_success() else '任务失败'
+    notification_body = (
+        f'run_id={result.task_id}\n'
+        f'status={result.status.value}\n'
+        f'elapsed={elapsed:.1f}s'
+    )
+    try:
+        send_feishu_text(notification_title, notification_body)
+    except FeishuNotificationError as exc:
+        logging.getLogger(__name__).error('Feishu notification failed: %s', exc)
+
+    try:
+        send_wechat_work_text(notification_title, notification_body)
+    except WechatWorkNotificationError as exc:
+        logging.getLogger(__name__).error(
+            'WeChat Work notification failed: %s', exc
+        )
 
     sys.exit(0 if result.is_success() else 1)
 
